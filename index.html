@@ -1,0 +1,3710 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#202523">
+  <title>风芽远征 · 自动战棋 Demo</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      width: 100vw;
+      height: 100dvh;
+      margin: 0;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% 12%, rgba(110,121,110,.24), transparent 34%),
+        linear-gradient(145deg, #171c1c 0%, #252a28 52%, #15191b 100%);
+      font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+      overscroll-behavior: none;
+    }
+    body {
+      position: fixed;
+      inset: 0;
+      display: block;
+      min-height: 0;
+      padding: 0;
+    }
+    #game-shell {
+      position: absolute;
+      top: env(safe-area-inset-top, 0px);
+      right: env(safe-area-inset-right, 0px);
+      bottom: env(safe-area-inset-bottom, 0px);
+      left: env(safe-area-inset-left, 0px);
+      width: auto;
+      height: auto;
+    }
+    canvas {
+      position: absolute;
+      inset: 0;
+      display: block;
+      width: 100%;
+      height: 100%;
+      border-radius: 0;
+      touch-action: none;
+      outline: none;
+      background: #202523;
+    }
+    #live {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+  </style>
+</head>
+<body>
+  <main id="game-shell">
+    <canvas id="game" width="390" height="844" aria-label="风芽远征自动战棋游戏画面" tabindex="0"></canvas>
+    <div id="live" aria-live="polite"></div>
+  </main>
+
+  <script>
+  "use strict";
+
+  /* =========================
+     集中配置：玩法与 AI 权重
+     ========================= */
+  const CONFIG = {
+    WIDTH: 390,
+    HEIGHT: 844,
+    MAP_COLS: 14,
+    MAP_ROWS: 26,
+    VIEW_COLS: 7,
+    VIEW_ROWS: 13,
+    CELL: 38,
+    FIELD_X: 62,
+    FIELD_Y: 103,
+    FIELD_W: 266,
+    FIELD_H: 494,
+    ACTION_THRESHOLD: 100,
+    ACTION_POINTS: 4,
+    MOVE_PER_ACTION_POINT: 4,
+    ENEMY_MOVE: 2,
+    MAX_DRAWS_PER_ACTION: 100,
+    HAZARD_DAMAGE: 10,
+    BURN_DURATION: 3.5,
+    BURN_DAMAGE: 8,
+    VULNERABLE_BONUS: 0.25,
+    ANIMATION: {
+      INTRO: 180,
+      DRAW: 560,
+      SORT_HAND: 1180,
+      MERGE: 1400,
+      ACTION_START: 900,
+      MOVE_PER_CELL: 170,
+      CARD_FLY: 460,
+      SKILL_TITLE: 300,
+      WINDUP: 380,
+      CAST: 720,
+      SETTLE: 560,
+      SKIP: 160,
+      ATTACK: 560,
+      END_TILE: 180
+    },
+    AI_WEIGHTS: {
+      CASTABLE_CARD: 18,
+      DAMAGE: 0.34,
+      HEAL: 0.42,
+      AOE_HIT: 9,
+      KILL: 32,
+      DANGER_TILE: -34,
+      ENEMY_THREAT: -12,
+      SAFETY_DISTANCE: 1.7,
+      APPROACH: 2.8
+    },
+    COLORS: {
+      ink: "#f0eadc",
+      muted: "#aeb6af",
+      panel: "rgba(18,22,23,.84)",
+      panelLine: "rgba(190,169,119,.38)",
+      ally: "#56c7ad",
+      enemy: "#ef7580",
+      gold: "#f3bf55",
+      danger: "#f3a36f",
+      gridA: "#77766d",
+      gridB: "#6c6d66"
+    },
+    ALLIES: [
+      { id: "a1", name: "芽芽", short: "芽", x: 4, y: 15, hp: 108, speed: 18, color: "#55c9ad" },
+      { id: "a2", name: "晴羽", short: "羽", x: 5, y: 13, hp: 92, speed: 22, color: "#62b9ee" },
+      { id: "a3", name: "露米", short: "露", x: 8, y: 14, hp: 98, speed: 16, color: "#a98ce8" },
+      { id: "a4", name: "柚子", short: "柚", x: 10, y: 13, hp: 118, speed: 14, color: "#eac95e" }
+    ],
+    ENEMIES: [
+      { id: "e1", name: "刺团", short: "刺", type: "melee", x: 4, y: 9, hp: 82, speed: 15, attack: 14, range: 1 },
+      { id: "e2", name: "钳叶", short: "钳", type: "melee", x: 9, y: 9, hp: 86, speed: 13, attack: 15, range: 1 },
+      { id: "e3", name: "莓弓", short: "弓", type: "ranged", x: 5, y: 8, hp: 66, speed: 17, attack: 10, range: 4 },
+      { id: "e4", name: "蒲弩", short: "弩", type: "ranged", x: 8, y: 8, hp: 70, speed: 16, attack: 11, range: 4 },
+      { id: "e5", name: "赤冠", short: "冠", type: "elite", x: 7, y: 9, hp: 165, speed: 12, attack: 20, range: 1 }
+    ]
+  };
+
+  const SKILL_DEFS = {
+    guard: {
+      name: "守护", short: "守", color: "#58c9c2", cooldownTurns: 1,
+      shield: [20, 35, 55], splashShield: 16
+    },
+    pull: {
+      name: "牵引", short: "牵", color: "#9b86dc", cooldownTurns: 1, range: 4,
+      damage: [8, 13, 20], pull: [1, 2, 3]
+    },
+    sunder: {
+      name: "破甲", short: "破", color: "#e5a15e", cooldownTurns: 1, range: 4,
+      damage: [10, 16, 24], duration: [3, 5, 7]
+    },
+    slash: {
+      name: "斩击", short: "斩", color: "#ed727d", cooldownTurns: 0, range: 1,
+      damage: [18, 30, 48], splashDamage: 24
+    },
+    fireball: {
+      name: "火球", short: "火", color: "#f28a65", cooldownTurns: 2, range: 4,
+      damage: [16, 27, 42]
+    },
+    heal: {
+      name: "治疗", short: "疗", color: "#70c980", cooldownTurns: 2, range: 4,
+      heal: [18, 30, 48], splashHeal: 18
+    },
+    charge: {
+      name: "冲锋", short: "冲", color: "#589fe2", cooldownTurns: 2,
+      distance: [2, 3, 4], damage: [16, 28, 43]
+    },
+    rapid: {
+      name: "连射", short: "连", color: "#d9ac42", cooldownTurns: 1, range: 5,
+      hits: [2, 3, 4], perHit: [7, 9, 12]
+    }
+  };
+
+  const SKILL_KEYS = Object.keys(SKILL_DEFS);
+  const INITIAL_SKILL_ORDERS = {
+    a1: ["guard", "slash", "charge", "heal", "pull", "sunder", "fireball", "rapid"],
+    a2: ["rapid", "fireball", "sunder", "pull", "charge", "slash", "heal", "guard"],
+    a3: ["heal", "guard", "fireball", "pull", "sunder", "rapid", "slash", "charge"],
+    a4: ["slash", "charge", "guard", "sunder", "pull", "rapid", "fireball", "heal"]
+  };
+
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const ease = t => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
+  const manhattan = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+  const keyOf = (x, y) => x + "," + y;
+  const deepCopy = obj => JSON.parse(JSON.stringify(obj));
+
+  function roundRect(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2);
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, rr);
+  }
+
+  class SeededRandom {
+    constructor(seed) {
+      this.seed = seed >>> 0;
+      this.state = this.seed || 0x6d2b79f5;
+    }
+    next() {
+      let t = this.state += 0x6d2b79f5;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    }
+    int(max) {
+      return Math.floor(this.next() * max);
+    }
+    pick(arr) {
+      return arr[this.int(arr.length)];
+    }
+  }
+
+  let CARD_SEQUENCE = 1;
+
+  class Card {
+    constructor(skill, star, inExtra) {
+      this.id = CARD_SEQUENCE++;
+      this.skill = skill;
+      this.star = star || 1;
+      this.inExtra = !!inExtra;
+    }
+  }
+
+  class Unit {
+    constructor(data, team, skillOrder) {
+      this.id = data.id;
+      this.name = data.name;
+      this.short = data.short;
+      this.team = team;
+      this.type = data.type || "ally";
+      this.x = data.x;
+      this.y = data.y;
+      this.renderX = data.x;
+      this.renderY = data.y;
+      this.maxHp = data.hp;
+      this.hp = data.hp;
+      this.shield = 0;
+      this.speed = data.speed;
+      this.gauge = 0;
+      this.attack = data.attack || 0;
+      this.range = data.range || 1;
+      this.color = data.color || (team === "ally" ? CONFIG.COLORS.ally : CONFIG.COLORS.enemy);
+      this.alive = true;
+      this.deathFade = 1;
+      this.vulnerableUntil = 0;
+      this.passiveSlots = [null, null, null, null, null];
+      this.skillBar = skillOrder ? skillOrder.slice() : [];
+      this.cooldowns = {};
+      this.cooldownStartedAt = {};
+      SKILL_KEYS.forEach(k => this.cooldowns[k] = 0);
+      SKILL_KEYS.forEach(k => this.cooldownStartedAt[k] = -1);
+      this.hand = [];
+      this.extraCard = null;
+      this.actionCount = 0;
+      this.maxActionPoints = team === "ally" ? CONFIG.ACTION_POINTS : 0;
+      this.actionPoints = this.maxActionPoints;
+    }
+    hpRatio() {
+      return this.hp / this.maxHp;
+    }
+    cooldownLeft(skill) {
+      return Math.max(0, Math.ceil(this.cooldowns[skill] || 0));
+    }
+    isCooling(skill) {
+      return this.cooldownLeft(skill) > 0;
+    }
+    setCooldown(skill, turns) {
+      const value = Math.max(0, Math.floor(turns || 0));
+      this.cooldowns[skill] = value;
+      this.cooldownStartedAt[skill] = value > 0 ? this.actionCount : -1;
+    }
+    finishOwnTurnCooldowns() {
+      SKILL_KEYS.forEach(skill => {
+        if (this.cooldowns[skill] > 0 && this.cooldownStartedAt[skill] < this.actionCount) {
+          this.cooldowns[skill]--;
+          if (this.cooldowns[skill] <= 0) this.cooldownStartedAt[skill] = -1;
+        }
+      });
+    }
+  }
+
+  class GridMap {
+    constructor(game) {
+      this.game = game;
+      this.obstacles = new Set([
+        "1,2", "1,3", "5,2", "9,2", "12,2",
+        "4,5", "5,5", "8,5", "9,5", "6,7",
+        "2,8", "3,8", "10,9", "11,9",
+        "5,10", "8,10", "2,12", "3,12", "10,12",
+        "6,13", "7,13", "11,14", "12,14",
+        "1,16", "2,16", "10,17", "11,17", "6,18",
+        "3,20", "4,20", "9,20", "10,20", "6,22",
+        "1,23", "12,23", "7,24"
+      ]);
+      this.dangers = new Set([
+        "6,4", "7,6", "3,10", "9,11", "5,14", "9,15", "3,18", "12,6",
+        "5,21", "9,24", "3,25"
+      ]);
+      this.burnZones = [];
+      this.cameraX = 3.5;
+      this.cameraY = 10;
+      this.targetCameraX = this.cameraX;
+      this.targetCameraY = this.cameraY;
+      this.manualCamera = false;
+    }
+    inBounds(x, y) {
+      return x >= 0 && y >= 0 && x < CONFIG.MAP_COLS && y < CONFIG.MAP_ROWS;
+    }
+    isObstacle(x, y) {
+      return this.obstacles.has(keyOf(x, y));
+    }
+    unitAt(x, y, ignoreUnit) {
+      return this.game.units.find(u => u.alive && u !== ignoreUnit && u.x === x && u.y === y) || null;
+    }
+    isBlocked(x, y, ignoreUnit) {
+      return !this.inBounds(x, y) || this.isObstacle(x, y) || !!this.unitAt(x, y, ignoreUnit);
+    }
+    isDanger(x, y) {
+      return this.dangers.has(keyOf(x, y));
+    }
+    neighbors(x, y) {
+      return [
+        { x: x, y: y - 1 },
+        { x: x - 1, y: y },
+        { x: x + 1, y: y },
+        { x: x, y: y + 1 }
+      ].filter(p => this.inBounds(p.x, p.y));
+    }
+    reachable(unit, maxSteps) {
+      return this.reachableFrom(unit, { x: unit.x, y: unit.y }, maxSteps);
+    }
+    reachableFrom(unit, start, maxSteps) {
+      const startKey = keyOf(start.x, start.y);
+      const queue = [{ x: start.x, y: start.y, d: 0, path: [{ x: start.x, y: start.y }] }];
+      const seen = new Set([startKey]);
+      const result = [];
+      while (queue.length) {
+        const node = queue.shift();
+        result.push(node);
+        if (node.d >= maxSteps) continue;
+        for (const n of this.neighbors(node.x, node.y)) {
+          const k = keyOf(n.x, n.y);
+          if (seen.has(k) || this.isBlocked(n.x, n.y, unit)) continue;
+          seen.add(k);
+          queue.push({ x: n.x, y: n.y, d: node.d + 1, path: node.path.concat([n]) });
+        }
+      }
+      return result;
+    }
+    distanceToNearestDanger(pos) {
+      let best = 999;
+      this.dangers.forEach(k => {
+        const parts = k.split(",");
+        best = Math.min(best, Math.abs(pos.x - +parts[0]) + Math.abs(pos.y - +parts[1]));
+      });
+      return best;
+    }
+    purgeBurn(time) {
+      this.burnZones = this.burnZones.filter(z => z.expiresAt > time);
+    }
+    focusOn(x, y, immediate) {
+      const tx = clamp(x - (CONFIG.VIEW_COLS - 1) / 2, 0, CONFIG.MAP_COLS - CONFIG.VIEW_COLS);
+      const ty = clamp(y - (CONFIG.VIEW_ROWS - 1) / 2, 0, CONFIG.MAP_ROWS - CONFIG.VIEW_ROWS);
+      this.targetCameraX = tx;
+      this.targetCameraY = ty;
+      this.manualCamera = false;
+      if (immediate) {
+        this.cameraX = tx;
+        this.cameraY = ty;
+      }
+    }
+    panBy(dxCells, dyCells) {
+      this.manualCamera = true;
+      this.cameraX = clamp(this.cameraX + dxCells, 0, CONFIG.MAP_COLS - CONFIG.VIEW_COLS);
+      this.cameraY = clamp(this.cameraY + dyCells, 0, CONFIG.MAP_ROWS - CONFIG.VIEW_ROWS);
+      this.targetCameraX = this.cameraX;
+      this.targetCameraY = this.cameraY;
+    }
+    centerCameraAt(x, y) {
+      this.manualCamera = true;
+      this.cameraX = clamp(x - CONFIG.VIEW_COLS / 2, 0, CONFIG.MAP_COLS - CONFIG.VIEW_COLS);
+      this.cameraY = clamp(y - CONFIG.VIEW_ROWS / 2, 0, CONFIG.MAP_ROWS - CONFIG.VIEW_ROWS);
+      this.targetCameraX = this.cameraX;
+      this.targetCameraY = this.cameraY;
+    }
+    updateCamera(dt) {
+      if (this.manualCamera) return;
+      const t = 1 - Math.pow(0.004, Math.min(dt, 50) / 1000);
+      this.cameraX = lerp(this.cameraX, this.targetCameraX, t);
+      this.cameraY = lerp(this.cameraY, this.targetCameraY, t);
+      if (Math.abs(this.cameraX - this.targetCameraX) < 0.002) this.cameraX = this.targetCameraX;
+      if (Math.abs(this.cameraY - this.targetCameraY) < 0.002) this.cameraY = this.targetCameraY;
+    }
+    worldToScreen(x, y) {
+      return {
+        x: CONFIG.FIELD_X + (x - this.cameraX + 0.5) * CONFIG.CELL,
+        y: CONFIG.FIELD_Y + (y - this.cameraY + 0.5) * CONFIG.CELL
+      };
+    }
+    screenToWorld(sx, sy) {
+      return {
+        x: Math.floor(this.cameraX + (sx - CONFIG.FIELD_X) / CONFIG.CELL),
+        y: Math.floor(this.cameraY + (sy - CONFIG.FIELD_Y) / CONFIG.CELL)
+      };
+    }
+  }
+
+  class HandManager {
+    constructor(game) {
+      this.game = game;
+    }
+    priority(unit, skill) {
+      const i = unit.skillBar.indexOf(skill);
+      return i < 0 ? 999 : i;
+    }
+    sortCards(unit, cards) {
+      return cards.slice().sort((a, b) =>
+        this.priority(unit, a.skill) - this.priority(unit, b.skill) ||
+        b.star - a.star ||
+        a.id - b.id
+      );
+    }
+    handLimit(unit) {
+      return Math.min(5, Math.floor(unit.skillBar.length / 2) + 1);
+    }
+    stateCards(state) {
+      return state.hand.concat(state.extra ? [state.extra] : []);
+    }
+    cloneState(state) {
+      return { hand: state.hand.slice(), extra: state.extra || null };
+    }
+    arrange(unit, cards, previousExtra) {
+      const cooling = this.sortCards(unit, cards.filter(c => unit.isCooling(c.skill)));
+      const limit = this.handLimit(unit);
+      const extra = cooling[0] ||
+        (previousExtra && cards.includes(previousExtra) ? previousExtra : null) ||
+        (cards.length > limit ? cards[limit] : null);
+      const hand = cards.filter(c => c !== extra).slice(0, this.handLimit(unit));
+      return { hand: hand, extra: extra };
+    }
+    applyState(unit, state) {
+      const oldCards = unit.hand.concat(unit.extraCard ? [unit.extraCard] : []);
+      oldCards.concat(this.stateCards(state)).forEach(c => c.inExtra = false);
+      state.hand.forEach(c => c.inExtra = false);
+      if (state.extra) state.extra.inExtra = true;
+      unit.hand = state.hand.slice();
+      unit.extraCard = state.extra || null;
+    }
+    findMerge(unit, cards) {
+      for (let i = 0; i < cards.length; i++) {
+        const card = cards[i];
+        if (card.star >= 3) continue;
+        for (let j = i + 1; j < cards.length; j++) {
+          const mate = cards[j];
+          if (mate.skill === card.skill && mate.star === card.star) {
+            return { pair: [card, mate], firstIndex: i, secondIndex: j };
+          }
+        }
+      }
+      return null;
+    }
+    planAction(unit) {
+      const startingCards = unit.hand.concat(unit.extraCard ? [unit.extraCard] : []);
+      let state = this.arrange(unit, startingCards, unit.extraCard);
+      const operations = [];
+      let draws = 0;
+      let guard = 0;
+      const limit = this.handLimit(unit);
+      const drawIntoRightmostSlot = () => {
+        if (state.hand.length >= limit || draws >= CONFIG.MAX_DRAWS_PER_ACTION || !unit.skillBar.length) {
+          return false;
+        }
+        const skill = unit.skillBar[this.game.rng.int(unit.skillBar.length)];
+        const card = new Card(skill, 1, false);
+        const after = this.cloneState(state);
+        after.hand.push(card);
+        operations.push({
+          type: "draw", before: this.cloneState(state), after: this.cloneState(after), card: card
+        });
+        state = after;
+        draws++;
+        return true;
+      };
+
+      // 先按抽取顺序依次填入 1…N 槽；在初次补满前不检查合成，也不改变已有卡牌槽位。
+      let initialDraws = 0;
+      while (state.hand.length < limit && guard++ < 500 && drawIntoRightmostSlot()) initialDraws++;
+
+      // 初次补牌结束后才显式整理：逻辑队列的排序不再偷偷改变屏幕上的槽位。
+      if (initialDraws > 0 && state.hand.length > 1) {
+        const after = this.cloneState(state);
+        after.hand = this.sortCards(unit, state.hand);
+        operations.push({
+          type: "sort", before: this.cloneState(state), after: this.cloneState(after),
+          cards: this.stateCards(state).slice()
+        });
+        state = after;
+      }
+
+      // 每轮严格执行：检查合成 → 保留较小槽位并左移补空 → 从右侧补一张 → 再检查。
+      while (guard++ < 500) {
+        const cards = this.stateCards(state);
+        const match = this.findMerge(unit, cards);
+        if (!match) break;
+        const pair = match.pair;
+        const merged = new Card(pair[0].skill, pair[0].star + 1, false);
+        const mergesIntoExtra = !!state.extra && pair.includes(state.extra);
+        let compacted;
+        let after;
+        if (mergesIntoExtra) {
+          compacted = cards.filter(card => !pair.includes(card));
+          after = { hand: compacted.slice(0, limit), extra: merged };
+        } else {
+          compacted = cards.slice();
+          compacted[match.firstIndex] = merged;
+          compacted.splice(match.secondIndex, 1);
+          after = {
+            hand: compacted.filter(card => card !== state.extra).slice(0, limit),
+            extra: state.extra || null
+          };
+        }
+        operations.push({
+          type: "merge", before: this.cloneState(state), after: this.cloneState(after),
+          pair: pair.slice(), merged: merged,
+          firstIndex: match.firstIndex, secondIndex: match.secondIndex,
+          mergesIntoExtra: mergesIntoExtra
+        });
+        state = after;
+        drawIntoRightmostSlot();
+      }
+      if (state.hand.length < limit && draws >= CONFIG.MAX_DRAWS_PER_ACTION) {
+        console.warn("[HandManager] 单次行动抽牌达到上限", unit.id);
+        this.game.log("抽牌达到 100 张保护上限", "warn");
+      }
+      const queue = this.sortCards(unit, this.stateCards(state));
+      return {
+        operations: operations,
+        finalState: this.cloneState(state),
+        queue: queue,
+        draws: draws,
+        handLimit: this.handLimit(unit)
+      };
+    }
+    removeCard(unit, card) {
+      unit.hand = unit.hand.filter(c => c !== card);
+      if (unit.extraCard === card) unit.extraCard = null;
+    }
+    normalizeAfterAction(unit) {
+      const cards = unit.hand.concat(unit.extraCard ? [unit.extraCard] : []);
+      const state = this.arrange(unit, cards, unit.extraCard);
+      this.applyState(unit, state);
+    }
+  }
+
+  class SkillSystem {
+    constructor(game) {
+      this.game = game;
+    }
+    alliesOf(unit) {
+      return this.game.units.filter(u => u.alive && u.team === unit.team);
+    }
+    enemiesOf(unit) {
+      return this.game.units.filter(u => u.alive && u.team !== unit.team);
+    }
+    chooseStable(list, scoreFn, descending) {
+      if (!list.length) return null;
+      return list.slice().sort((a, b) => {
+        const d = scoreFn(a) - scoreFn(b);
+        if (Math.abs(d) > 0.0001) return descending ? -d : d;
+        return a.id.localeCompare(b.id);
+      })[0];
+    }
+    areaCells(center, star) {
+      const cells = [{ x: center.x, y: center.y }];
+      if (star >= 2) {
+        cells.push(
+          { x: center.x + 1, y: center.y },
+          { x: center.x - 1, y: center.y },
+          { x: center.x, y: center.y + 1 },
+          { x: center.x, y: center.y - 1 }
+        );
+      }
+      return cells.filter(p => this.game.map.inBounds(p.x, p.y));
+    }
+    findTarget(actor, card, pos) {
+      const def = SKILL_DEFS[card.skill];
+      const origin = pos || { x: actor.x, y: actor.y };
+      const allies = this.alliesOf(actor);
+      const enemies = this.enemiesOf(actor);
+      const inRange = (u, r) => manhattan(origin, u) <= r;
+      if (card.skill === "guard") {
+        return this.chooseStable(allies, u => u.hpRatio(), false);
+      }
+      if (card.skill === "pull") {
+        return this.chooseStable(enemies.filter(u => inRange(u, def.range)), u => manhattan(origin, u), false);
+      }
+      if (card.skill === "sunder") {
+        return this.chooseStable(enemies.filter(u => inRange(u, def.range)), u => u.hpRatio(), true);
+      }
+      if (card.skill === "slash") {
+        return this.chooseStable(enemies.filter(u => inRange(u, 1)), u => u.hpRatio(), false);
+      }
+      if (card.skill === "fireball") {
+        const choices = [];
+        for (let y = 0; y < CONFIG.MAP_ROWS; y++) {
+          for (let x = 0; x < CONFIG.MAP_COLS; x++) {
+            const cell = { x: x, y: y };
+            if (manhattan(origin, cell) > def.range) continue;
+            const cells = this.areaCells(cell, card.star);
+          const targets = enemies.filter(u => cells.some(p => p.x === u.x && p.y === u.y));
+            if (targets.length) choices.push({ id: keyOf(x, y), cell: cell, targets: targets });
+          }
+        }
+        if (!choices.length) return null;
+        return choices.sort((a, b) =>
+          b.targets.length - a.targets.length ||
+          a.targets.reduce((s, u) => s + u.hp, 0) - b.targets.reduce((s, u) => s + u.hp, 0) ||
+          a.id.localeCompare(b.id)
+        )[0];
+      }
+      if (card.skill === "heal") {
+        const hurt = allies.filter(u => inRange(u, def.range) && u.hp < u.maxHp);
+        return this.chooseStable(hurt, u => u.hpRatio(), false);
+      }
+      if (card.skill === "charge") {
+        const max = def.distance[card.star - 1];
+        const reachable = enemies.map(target => ({
+          target: target,
+          path: this.chargePath(actor, target, max, origin)
+        })).filter(item => {
+          const end = item.path[item.path.length - 1];
+          return end && manhattan(end, item.target) === 1;
+        }).sort((a, b) =>
+          manhattan(origin, a.target) - manhattan(origin, b.target) ||
+          a.path.length - b.path.length ||
+          a.target.id.localeCompare(b.target.id)
+        );
+        return reachable.length ? reachable[0].target : null;
+      }
+      if (card.skill === "rapid") {
+        return this.chooseStable(enemies.filter(u => inRange(u, def.range)), u => u.hpRatio(), false);
+      }
+      return null;
+    }
+    estimate(actor, card, pos) {
+      const target = this.findTarget(actor, card, pos);
+      if (!target) return { castable: false, damage: 0, heal: 0, aoe: 0, kills: 0 };
+      const def = SKILL_DEFS[card.skill];
+      let damage = 0;
+      let heal = 0;
+      let aoe = 0;
+      let kills = 0;
+      if (card.skill === "guard") {
+        heal = Math.min(def.shield[card.star - 1], 80 - Math.min(80, target.shield));
+      } else if (card.skill === "pull") {
+        damage = def.damage[card.star - 1];
+        kills = damage >= target.hp ? 1 : 0;
+      } else if (card.skill === "sunder") {
+        damage = def.damage[card.star - 1];
+        kills = damage >= target.hp ? 1 : 0;
+      } else if (card.skill === "slash") {
+        damage = def.damage[card.star - 1];
+        aoe = card.star === 3 ? this.enemiesOf(actor).filter(u => manhattan(u, target) === 1).length : 0;
+        damage += aoe * def.splashDamage;
+        kills = damage >= target.hp ? 1 : 0;
+      } else if (card.skill === "fireball") {
+        aoe = target.targets.length;
+        damage = def.damage[card.star - 1] * aoe;
+        kills = target.targets.filter(u => def.damage[card.star - 1] >= u.hp).length;
+      } else if (card.skill === "heal") {
+        heal = Math.min(def.heal[card.star - 1], target.maxHp - target.hp);
+      } else if (card.skill === "charge") {
+        damage = def.damage[card.star - 1];
+        kills = damage >= target.hp ? 1 : 0;
+      } else if (card.skill === "rapid") {
+        damage = def.hits[card.star - 1] * def.perHit[card.star - 1];
+        kills = damage >= target.hp ? 1 : 0;
+      }
+      return { castable: true, damage: damage, heal: heal, aoe: aoe, kills: kills };
+    }
+    pullPath(target, actor, steps) {
+      const path = [{ x: target.x, y: target.y }];
+      let cur = { x: target.x, y: target.y };
+      for (let i = 0; i < steps; i++) {
+        const options = this.game.map.neighbors(cur.x, cur.y)
+          .filter(p => !this.game.map.isBlocked(p.x, p.y, target))
+          .filter(p => manhattan(p, actor) < manhattan(cur, actor))
+          .sort((a, b) =>
+            manhattan(a, actor) - manhattan(b, actor) ||
+            a.y - b.y || a.x - b.x
+          );
+        if (!options.length) break;
+        cur = options[0];
+        path.push(cur);
+      }
+      return path;
+    }
+    chargePath(actor, target, maxSteps, origin) {
+      const start = origin || { x: actor.x, y: actor.y };
+      const candidates = this.game.map.reachableFrom(actor, start, maxSteps)
+        .filter(n => !(n.x === start.x && n.y === start.y) || manhattan(start, target) === 1)
+        .sort((a, b) =>
+          manhattan(a, target) - manhattan(b, target) ||
+          a.d - b.d || a.y - b.y || a.x - b.x
+        );
+      const best = candidates.find(n => manhattan(n, target) === 1);
+      return best ? best.path : [{ x: start.x, y: start.y }];
+    }
+    impactMoment(skill) {
+      return {
+        guard: .44,
+        pull: .48,
+        sunder: .52,
+        slash: .42,
+        fireball: .60,
+        heal: .48,
+        charge: .56,
+        rapid: .80
+      }[skill] || .5;
+    }
+    playCastEffect(actor, card, target) {
+      const def = SKILL_DEFS[card.skill];
+      const star = card.star;
+      const from = { x: actor.x, y: actor.y };
+      if (card.skill === "guard") {
+        this.game.renderer.addEffect("shield", {
+          x: target.x, y: target.y, color: def.color, star: star
+        }, 760);
+      }
+      if (card.skill === "pull") {
+        this.game.renderer.addEffect("chain", {
+          from: from, targetUnit: target, color: def.color, star: star
+        }, 720);
+      }
+      if (card.skill === "sunder") {
+        this.game.renderer.addEffect("sunder", {
+          x: target.x, y: target.y, from: from, color: def.color, star: star
+        }, 720);
+      }
+      if (card.skill === "slash") {
+        this.game.renderer.addEffect("slash", {
+          x: target.x, y: target.y, color: def.color, star: star
+        }, 680);
+      }
+      if (card.skill === "fireball") {
+        this.game.renderer.addEffect("fireball", {
+          from: from, to: target.cell, color: def.color, star: star
+        }, 760);
+      }
+      if (card.skill === "heal") {
+        this.game.renderer.addEffect("heal", {
+          x: target.x, y: target.y, color: def.color, star: star
+        }, 780);
+      }
+      if (card.skill === "charge") {
+        const path = this.chargePath(actor, target, def.distance[star - 1]);
+        this.game.renderer.addEffect("charge", {
+          path: path.map(p => ({ x: p.x, y: p.y })),
+          target: { x: target.x, y: target.y }, color: def.color, star: star
+        }, 760);
+      }
+      if (card.skill === "rapid") {
+        this.game.renderer.addEffect("rapid", {
+          from: from, to: { x: target.x, y: target.y }, color: def.color,
+          hits: def.hits[star - 1], star: star
+        }, 700);
+      }
+    }
+    playResolveEffect(actor, card, target) {
+      if (card.skill !== "fireball") return;
+      const def = SKILL_DEFS[card.skill];
+      this.game.renderer.addEffect("burst", {
+        x: target.cell.x, y: target.cell.y, color: def.color, star: card.star
+      }, 520);
+    }
+    cast(actor, card, target) {
+      const def = SKILL_DEFS[card.skill];
+      const star = card.star;
+      const from = { x: actor.x, y: actor.y };
+      const result = { kind: card.skill, target: target, from: from, motion: null, color: def.color };
+
+      if (card.skill === "guard") {
+        target.shield += def.shield[star - 1];
+        this.game.renderer.addFloat(target.x, target.y, "+" + def.shield[star - 1] + "盾", def.color);
+        if (star === 3) {
+          this.alliesOf(actor).filter(u => u !== target && manhattan(u, target) === 1).forEach(u => {
+            u.shield += def.splashShield;
+            this.game.renderer.addFloat(u.x, u.y, "+" + def.splashShield + "盾", def.color);
+          });
+        }
+        this.game.log(actor.name + " 为 " + target.name + " 提供护盾", "skill");
+      }
+
+      if (card.skill === "pull") {
+        this.game.applyDamage(actor, target, def.damage[star - 1], "牵引");
+        if (target.alive) {
+          const path = this.pullPath(target, actor, def.pull[star - 1]);
+          if (path.length > 1) {
+            const old = { x: target.x, y: target.y };
+            const end = path[path.length - 1];
+            target.x = end.x;
+            target.y = end.y;
+            target.renderX = old.x;
+            target.renderY = old.y;
+            result.motion = { unit: target, path: path };
+          }
+        }
+        this.game.log(actor.name + " 牵引 " + target.name, "skill");
+      }
+
+      if (card.skill === "sunder") {
+        this.game.applyDamage(actor, target, def.damage[star - 1], "破甲");
+        if (target.alive) target.vulnerableUntil = this.game.battle.time + def.duration[star - 1];
+        this.game.log(actor.name + " 破甲 " + target.name, "skill");
+      }
+
+      if (card.skill === "slash") {
+        this.game.applyDamage(actor, target, def.damage[star - 1], "斩击");
+        if (star === 3) {
+          this.enemiesOf(actor).filter(u => u !== target && manhattan(u, target) === 1)
+            .forEach(u => this.game.applyDamage(actor, u, def.splashDamage, "旋斩"));
+        }
+        this.game.log(actor.name + " 斩击 " + target.name, "skill");
+      }
+
+      if (card.skill === "fireball") {
+        const hitTargets = target.targets.slice();
+        hitTargets.forEach(u => this.game.applyDamage(actor, u, def.damage[star - 1], "火球"));
+        if (star === 3) {
+          this.areaCells(target.cell, 2).forEach(p => {
+            const existing = this.game.map.burnZones.find(z => z.x === p.x && z.y === p.y && z.team === actor.team);
+            if (existing) existing.expiresAt = this.game.battle.time + CONFIG.BURN_DURATION;
+            else this.game.map.burnZones.push({
+              x: p.x, y: p.y, team: actor.team,
+              expiresAt: this.game.battle.time + CONFIG.BURN_DURATION
+            });
+          });
+        }
+        this.game.log(actor.name + " 的火球命中 " + hitTargets.length + " 个目标", "skill");
+      }
+
+      if (card.skill === "heal") {
+        this.game.applyHeal(actor, target, def.heal[star - 1], "治疗");
+        if (star === 3) {
+          this.alliesOf(actor).filter(u => u !== target && manhattan(u, target) === 1)
+            .forEach(u => this.game.applyHeal(actor, u, def.splashHeal, "愈合余波"));
+        }
+        this.game.log(actor.name + " 治疗 " + target.name, "skill");
+      }
+
+      if (card.skill === "charge") {
+        const path = this.chargePath(actor, target, def.distance[star - 1]);
+        if (path.length > 1) {
+          const old = { x: actor.x, y: actor.y };
+          const end = path[path.length - 1];
+          actor.x = end.x;
+          actor.y = end.y;
+          actor.renderX = old.x;
+          actor.renderY = old.y;
+          result.motion = { unit: actor, path: path };
+        }
+        if (manhattan(actor, target) === 1) {
+          this.game.applyDamage(actor, target, def.damage[star - 1], "冲锋");
+        }
+        this.game.log(actor.name + " 冲锋 " + target.name, "skill");
+      }
+
+      if (card.skill === "rapid") {
+        const hits = def.hits[star - 1];
+        for (let i = 0; i < hits && target.alive; i++) {
+          this.game.applyDamage(actor, target, def.perHit[star - 1], "连射");
+        }
+        this.game.log(actor.name + " 对 " + target.name + " 连射 " + hits + " 次", "skill");
+      }
+      return result;
+    }
+  }
+
+  class BattleAI {
+    constructor(game) {
+      this.game = game;
+    }
+    enemyThreatAt(pos, team) {
+      let count = 0;
+      this.game.units.filter(u => u.alive && u.team !== team).forEach(enemy => {
+        const range = enemy.team === "enemy" ? enemy.range : 4;
+        if (manhattan(pos, enemy) <= range) count++;
+      });
+      return count;
+    }
+    nearestEnemyDistance(pos, team) {
+      const enemies = this.game.units.filter(u => u.alive && u.team !== team);
+      return enemies.length ? Math.min.apply(null, enemies.map(e => manhattan(pos, e))) : 0;
+    }
+    scorePosition(unit, queue, node) {
+      const W = CONFIG.AI_WEIGHTS;
+      let score = 0;
+      let castable = 0;
+      let damage = 0;
+      let heal = 0;
+      let aoe = 0;
+      let kills = 0;
+      const tempCd = Object.assign({}, unit.cooldowns);
+      for (const card of queue) {
+        if ((tempCd[card.skill] || 0) > 0) continue;
+        const est = this.game.skills.estimate(unit, card, node);
+        if (!est.castable) continue;
+        castable++;
+        damage += est.damage;
+        heal += est.heal;
+        aoe += est.aoe;
+        kills += est.kills;
+        const cd = SKILL_DEFS[card.skill].cooldownTurns;
+        if (cd > 0) tempCd[card.skill] = cd;
+      }
+      const enemyDist = this.nearestEnemyDistance(node, unit.team);
+      const threat = this.enemyThreatAt(node, unit.team);
+      score += castable * W.CASTABLE_CARD;
+      score += damage * W.DAMAGE;
+      score += heal * W.HEAL;
+      score += aoe * W.AOE_HIT;
+      score += kills * W.KILL;
+      score += this.game.map.isDanger(node.x, node.y) ? W.DANGER_TILE : 0;
+      score += threat * W.ENEMY_THREAT;
+      score += Math.min(enemyDist, 6) * W.SAFETY_DISTANCE;
+      score -= enemyDist * W.APPROACH;
+      return { score: score, castable: castable, damage: damage, heal: heal, aoe: aoe, kills: kills };
+    }
+    choosePosition(unit, queue) {
+      const nodes = this.game.map.reachable(unit, CONFIG.ACTION_POINTS * CONFIG.MOVE_PER_ACTION_POINT);
+      const scored = nodes.map(node => Object.assign(node, this.scorePosition(unit, queue, node)));
+      scored.sort((a, b) =>
+        b.score - a.score ||
+        a.d - b.d ||
+        this.game.map.distanceToNearestDanger(b) - this.game.map.distanceToNearestDanger(a)
+      );
+      const bestScore = scored[0].score;
+      const bestDistance = scored.filter(n => Math.abs(n.score - bestScore) < 0.0001)
+        .reduce((m, n) => Math.min(m, n.d), 999);
+      let tied = scored.filter(n => Math.abs(n.score - bestScore) < 0.0001 && n.d === bestDistance);
+      const bestDangerDistance = Math.max.apply(null, tied.map(n => this.game.map.distanceToNearestDanger(n)));
+      tied = tied.filter(n => this.game.map.distanceToNearestDanger(n) === bestDangerDistance);
+      const chosen = tied.length > 1 ? tied[this.game.rng.int(tied.length)] : tied[0];
+      this.game.log(
+        unit.name + " 的整手牌 AI 选择 (" + (chosen.x + 1) + "," + (chosen.y + 1) + ")，评分 " + chosen.score.toFixed(1),
+        "ai"
+      );
+      return chosen;
+    }
+    chooseCastPosition(unit, card, actionPoints) {
+      const maxSteps = Math.max(0, actionPoints) * CONFIG.MOVE_PER_ACTION_POINT;
+      if (!maxSteps) return null;
+      const W = CONFIG.AI_WEIGHTS;
+      const candidates = this.game.map.reachable(unit, maxSteps)
+        .filter(node => node.d > 0)
+        .map(node => {
+          const estimate = this.game.skills.estimate(unit, card, node);
+          if (!estimate.castable) return null;
+          const apCost = Math.ceil(node.d / CONFIG.MOVE_PER_ACTION_POINT);
+          const value = estimate.damage * W.DAMAGE + estimate.heal * W.HEAL +
+            estimate.aoe * W.AOE_HIT + estimate.kills * W.KILL;
+          return Object.assign(node, {
+            apCost: apCost,
+            value: value,
+            danger: this.game.map.isDanger(node.x, node.y) ? 1 : 0,
+            safety: this.game.map.distanceToNearestDanger(node)
+          });
+        })
+        .filter(Boolean)
+        .sort((a, b) =>
+          a.apCost - b.apCost ||
+          b.value - a.value ||
+          a.danger - b.danger ||
+          b.safety - a.safety ||
+          a.d - b.d || a.y - b.y || a.x - b.x
+        );
+      return candidates[0] || null;
+    }
+    chooseEnemyMove(unit, target) {
+      const nodes = this.game.map.reachable(unit, CONFIG.ENEMY_MOVE);
+      if (unit.type === "ranged") {
+        const ideal = 4;
+        return nodes.sort((a, b) => {
+          const da = manhattan(a, target);
+          const db = manhattan(b, target);
+          const sa = (da <= unit.range ? 40 : 0) - Math.abs(da - ideal) * 6 - (this.game.map.isDanger(a.x, a.y) ? 20 : 0);
+          const sb = (db <= unit.range ? 40 : 0) - Math.abs(db - ideal) * 6 - (this.game.map.isDanger(b.x, b.y) ? 20 : 0);
+          return sb - sa || a.d - b.d || a.y - b.y || a.x - b.x;
+        })[0];
+      }
+      return nodes.sort((a, b) =>
+        manhattan(a, target) - manhattan(b, target) ||
+        (this.game.map.isDanger(a.x, a.y) ? 1 : 0) - (this.game.map.isDanger(b.x, b.y) ? 1 : 0) ||
+        a.d - b.d || a.y - b.y || a.x - b.x
+      )[0];
+    }
+  }
+
+  class BattleManager {
+    constructor(game) {
+      this.game = game;
+      this.reset();
+    }
+    reset() {
+      this.time = 0;
+      this.running = false;
+      this.speed = 1;
+      this.sequence = [];
+      this.currentStep = null;
+      this.currentActor = null;
+      this.stepping = false;
+      this.gameOver = false;
+      this.result = "";
+      this.actionIndex = 0;
+    }
+    addStep(duration, onStart, onUpdate, onEnd, options) {
+      const opts = options || {};
+      this.sequence.push({
+        duration: Math.max(1, duration || 1),
+        elapsed: 0,
+        onStart: onStart || null,
+        onUpdate: onUpdate || null,
+        onEnd: onEnd || null,
+        started: false,
+        visualBarrier: !!opts.visualBarrier,
+        presented: false,
+        label: opts.label || ""
+      });
+    }
+    advanceTimeline() {
+      const alive = this.game.units.filter(u => u.alive);
+      if (!alive.length) return null;
+      let delta = Infinity;
+      alive.forEach(u => {
+        delta = Math.min(delta, Math.max(0, CONFIG.ACTION_THRESHOLD - u.gauge) / u.speed);
+      });
+      if (!Number.isFinite(delta)) return null;
+      this.time += delta;
+      alive.forEach(u => u.gauge = Math.min(CONFIG.ACTION_THRESHOLD, u.gauge + u.speed * delta));
+      this.game.map.purgeBurn(this.time);
+      const ready = alive.filter(u => u.gauge >= CONFIG.ACTION_THRESHOLD - 0.0001)
+        .sort((a, b) => b.speed - a.speed || a.id.localeCompare(b.id));
+      return ready[0] || null;
+    }
+    startNextAction() {
+      if (this.gameOver || this.currentActor) return;
+      const actor = this.advanceTimeline();
+      if (!actor) return;
+      this.currentActor = actor;
+      this.actionIndex++;
+      actor.actionCount++;
+      if (actor.team === "ally") actor.actionPoints = actor.maxActionPoints;
+      this.game.map.focusOn(actor.x, actor.y, false);
+      this.game.log(
+        "▶ " + actor.name + " 获得行动机会" + (actor.team === "ally" ? " · 行动力 " + actor.actionPoints : ""),
+        actor.team === "ally" ? "ally" : "enemy"
+      );
+      this.addStep(CONFIG.ANIMATION.INTRO);
+      if (actor.team === "ally") this.buildAllyAction(actor);
+      else this.buildEnemyAction(actor);
+    }
+    createMoveStep(unit, path, perCell) {
+      if (!path || path.length <= 1) return;
+      const duration = Math.max(80, (path.length - 1) * perCell);
+      this.addStep(duration, step => {
+        step.path = path.map(p => ({ x: p.x, y: p.y }));
+        const end = step.path[step.path.length - 1];
+        unit.x = end.x;
+        unit.y = end.y;
+        unit.renderX = step.path[0].x;
+        unit.renderY = step.path[0].y;
+        this.game.map.focusOn(end.x, end.y, false);
+      }, (step, t) => {
+        const segments = step.path.length - 1;
+        const f = clamp(t, 0, 0.999999) * segments;
+        const i = Math.min(segments - 1, Math.floor(f));
+        const lt = ease(f - i);
+        unit.renderX = lerp(step.path[i].x, step.path[i + 1].x, lt);
+        unit.renderY = lerp(step.path[i].y, step.path[i + 1].y, lt);
+      }, () => {
+        unit.renderX = unit.x;
+        unit.renderY = unit.y;
+      });
+    }
+    createHandPreparationSteps(actor, operations) {
+      const slotOf = (state, card) => {
+        if (state.extra === card) return this.game.hand.handLimit(actor);
+        return state.hand.indexOf(card);
+      };
+      const rectOf = (state, card) => {
+        const slot = slotOf(state, card);
+        if (slot < 0) throw new Error("手牌动画状态缺少卡牌 #" + card.id);
+        return this.game.renderer.getHandSlotRect(slot, actor);
+      };
+      operations.forEach(operation => {
+        if (operation.type === "draw") {
+          this.addStep(CONFIG.ANIMATION.DRAW, () => {
+            this.game.hand.applyState(actor, operation.before);
+            this.game.renderer.actionCue = {
+              type: "drawCard", actor: actor, card: operation.card,
+              targetRect: rectOf(operation.after, operation.card), progress: 0
+            };
+          }, (step, t) => {
+            if (this.game.renderer.actionCue) this.game.renderer.actionCue.progress = t;
+          }, () => {
+            this.game.hand.applyState(actor, operation.after);
+            this.game.log(actor.name + " 抽到「" + SKILL_DEFS[operation.card.skill].name + "」", "draw");
+            this.game.renderer.actionCue = null;
+          }, { visualBarrier: true, label: "drawCard" });
+        }
+        if (operation.type === "sort") {
+          this.addStep(CONFIG.ANIMATION.SORT_HAND, () => {
+            this.game.hand.applyState(actor, operation.before);
+            this.game.renderer.actionCue = {
+              type: "sortHand", actor: actor, progress: 0,
+              items: operation.cards.map(card => ({
+                card: card,
+                originRect: rectOf(operation.before, card),
+                targetRect: rectOf(operation.after, card),
+                fromExtra: operation.before.extra === card,
+                toExtra: operation.after.extra === card
+              }))
+            };
+          }, (step, t) => {
+            if (this.game.renderer.actionCue) this.game.renderer.actionCue.progress = t;
+          }, () => {
+            this.game.hand.applyState(actor, operation.after);
+            this.game.log(actor.name + " 手牌整理完成", "ai");
+            this.game.renderer.actionCue = null;
+          }, { visualBarrier: true, label: "sortHand" });
+        }
+        if (operation.type === "merge") {
+          this.addStep(CONFIG.ANIMATION.MERGE, () => {
+            this.game.hand.applyState(actor, operation.before);
+            const beforeCards = this.game.hand.stateCards(operation.before);
+            const afterCards = this.game.hand.stateCards(operation.after);
+            const shiftCards = afterCards.filter(card =>
+              beforeCards.includes(card) && !operation.pair.includes(card) &&
+              slotOf(operation.before, card) !== slotOf(operation.after, card)
+            ).map(card => ({
+              card: card,
+              fromRect: rectOf(operation.before, card),
+              toRect: rectOf(operation.after, card),
+              fromExtra: operation.before.extra === card,
+              toExtra: operation.after.extra === card
+            }));
+            this.game.renderer.actionCue = {
+              type: "mergeCards", actor: actor, pair: operation.pair,
+              merged: operation.merged,
+              originRects: operation.pair.map(card => rectOf(operation.before, card)),
+              originExtra: operation.pair.map(card => operation.before.extra === card),
+              targetRect: rectOf(operation.after, operation.merged),
+              targetExtra: operation.after.extra === operation.merged,
+              shiftCards: shiftCards,
+              progress: 0
+            };
+          }, (step, t) => {
+            if (this.game.renderer.actionCue) this.game.renderer.actionCue.progress = t;
+          }, () => {
+            this.game.hand.applyState(actor, operation.after);
+            this.game.log(
+              SKILL_DEFS[operation.merged.skill].name + " 合成为 " + operation.merged.star + "★并放回手牌",
+              "merge"
+            );
+            this.game.renderer.actionCue = null;
+          }, { visualBarrier: true, label: "mergeCards" });
+        }
+      });
+    }
+    createActionStartStep(actor, finalState, cardCount) {
+      this.addStep(CONFIG.ANIMATION.ACTION_START, () => {
+        this.game.hand.applyState(actor, finalState);
+        this.game.renderer.actionCue = {
+          type: "actionStart", actor: actor, cardCount: cardCount,
+          actionPoints: actor.actionPoints, progress: 0
+        };
+      }, (step, t) => {
+        if (this.game.renderer.actionCue) this.game.renderer.actionCue.progress = t;
+      }, () => {
+        this.game.log("▶ " + actor.name + " 开始行动", "ally");
+        this.game.renderer.actionCue = null;
+      }, { visualBarrier: true, label: "actionStart" });
+    }
+    createRepositionStep(actor, card) {
+      this.addStep(1, step => {
+        step.path = null;
+        step.visualBarrier = false;
+        if (!actor.alive || actor.isCooling(card.skill)) return;
+        if (this.game.skills.findTarget(actor, card)) return;
+        const choice = this.game.ai.chooseCastPosition(actor, card, actor.actionPoints);
+        if (!choice) {
+          this.game.log(
+            SKILL_DEFS[card.skill].name + (actor.actionPoints > 0 ? " 尝试寻路后仍无可施法位置" : " 行动力已耗尽，无法接近目标"),
+            "warn"
+          );
+          return;
+        }
+        step.path = choice.path.map(p => ({ x: p.x, y: p.y }));
+        step.duration = Math.max(100, (step.path.length - 1) * CONFIG.ANIMATION.MOVE_PER_CELL);
+        step.visualBarrier = true;
+        actor.actionPoints = Math.max(0, actor.actionPoints - choice.apCost);
+        const end = step.path[step.path.length - 1];
+        actor.x = end.x;
+        actor.y = end.y;
+        actor.renderX = step.path[0].x;
+        actor.renderY = step.path[0].y;
+        this.game.map.focusOn(end.x, end.y, false);
+        this.game.log(
+          actor.name + " 为施放「" + SKILL_DEFS[card.skill].name + "」移动 " + (step.path.length - 1) +
+          " 格，消耗 " + choice.apCost + " 行动力（剩余 " + actor.actionPoints + "）",
+          "ai"
+        );
+      }, (step, t) => {
+        if (!step.path || step.path.length < 2) return;
+        const segments = step.path.length - 1;
+        const f = clamp(t, 0, .999999) * segments;
+        const i = Math.min(segments - 1, Math.floor(f));
+        const lt = ease(f - i);
+        actor.renderX = lerp(step.path[i].x, step.path[i + 1].x, lt);
+        actor.renderY = lerp(step.path[i].y, step.path[i + 1].y, lt);
+      }, step => {
+        if (step.path) {
+          actor.renderX = actor.x;
+          actor.renderY = actor.y;
+        }
+      }, { label: "reposition" });
+    }
+    createCardStep(actor, card) {
+      const flow = {
+        actor: actor,
+        card: card,
+        valid: false,
+        target: null,
+        aimCell: null,
+        originRect: null,
+        result: null,
+        resolved: false,
+        effectStarted: false,
+        impactAt: .5,
+        reason: ""
+      };
+      const cancelRemaining = step => {
+        step.duration = 1;
+        step.visualBarrier = false;
+      };
+      const resolveImpact = () => {
+        if (!flow.valid || flow.resolved) return;
+        flow.resolved = true;
+        flow.result = this.game.skills.cast(actor, card, flow.target);
+        this.game.skills.playResolveEffect(actor, card, flow.target);
+        const cd = SKILL_DEFS[card.skill].cooldownTurns;
+        actor.setCooldown(card.skill, cd);
+        if (this.game.renderer.actionCue && this.game.renderer.actionCue.type === "impact") {
+          this.game.renderer.actionCue.result = flow.result;
+        }
+      };
+
+      this.addStep(CONFIG.ANIMATION.CARD_FLY, step => {
+        if (!actor.alive) {
+          this.game.hand.removeCard(actor, card);
+          flow.reason = "施法者已离场";
+          cancelRemaining(step);
+          return;
+        }
+        if (actor.isCooling(card.skill)) {
+          const left = actor.cooldownLeft(card.skill);
+          this.game.log(SKILL_DEFS[card.skill].name + " 冷却中，保留 · 剩余 " + left + " 个自身回合", "cooldown");
+          flow.reason = "冷却 " + left + " 回合";
+          this.game.renderer.actionCue = {
+            type: "skip", actor: actor, card: card, progress: 0, reason: flow.reason
+          };
+          step.duration = CONFIG.ANIMATION.SKIP;
+          return;
+        }
+        const target = this.game.skills.findTarget(actor, card);
+        if (!target) {
+          this.game.hand.removeCard(actor, card);
+          this.game.log(SKILL_DEFS[card.skill].name + " 已尝试移动，仍没有合法目标，弃置", "warn");
+          flow.reason = "移动后仍无目标";
+          this.game.renderer.actionCue = {
+            type: "skip", actor: actor, card: card, progress: 0, reason: flow.reason
+          };
+          step.duration = CONFIG.ANIMATION.SKIP;
+          return;
+        }
+        flow.valid = true;
+        flow.target = target;
+        flow.aimCell = target.cell ? { x: target.cell.x, y: target.cell.y } : { x: target.x, y: target.y };
+        flow.originRect = this.game.renderer.getCardRect(card.id);
+        this.game.hand.removeCard(actor, card);
+        this.game.renderer.actionCue = {
+          type: "cardFly", actor: actor, card: card, target: target,
+          aimCell: flow.aimCell, originRect: flow.originRect, progress: 0
+        };
+      }, (step, t) => {
+        if (this.game.renderer.actionCue) this.game.renderer.actionCue.progress = t;
+      }, () => {
+        if (!flow.valid) this.game.renderer.actionCue = null;
+      }, { visualBarrier: true, label: "cardFly" });
+
+      this.addStep(CONFIG.ANIMATION.SKILL_TITLE, step => {
+        if (!flow.valid) return cancelRemaining(step);
+        this.game.renderer.actionCue = {
+          type: "skillTitle", actor: actor, card: card, target: flow.target,
+          aimCell: flow.aimCell, progress: 0
+        };
+      }, (step, t) => {
+        if (this.game.renderer.actionCue) this.game.renderer.actionCue.progress = t;
+      }, null, { visualBarrier: true, label: "skillTitle" });
+
+      this.addStep(CONFIG.ANIMATION.WINDUP, step => {
+        if (!flow.valid) return cancelRemaining(step);
+        this.game.renderer.actionCue = {
+          type: "windup", actor: actor, card: card, target: flow.target,
+          aimCell: flow.aimCell, progress: 0
+        };
+      }, (step, t) => {
+        if (this.game.renderer.actionCue) this.game.renderer.actionCue.progress = t;
+      }, null, { visualBarrier: true, label: "windup" });
+
+      this.addStep(CONFIG.ANIMATION.CAST, step => {
+        if (!flow.valid) return cancelRemaining(step);
+        flow.impactAt = this.game.skills.impactMoment(card.skill);
+        if (!flow.effectStarted) {
+          flow.effectStarted = true;
+          this.game.skills.playCastEffect(actor, card, flow.target);
+        }
+        this.game.renderer.actionCue = {
+          type: "impact", actor: actor, card: card, target: flow.target,
+          aimCell: flow.aimCell, result: flow.result, progress: 0
+        };
+      }, (step, t) => {
+        if (this.game.renderer.actionCue) this.game.renderer.actionCue.progress = t;
+        if (t >= flow.impactAt) resolveImpact();
+        const motion = flow.result && flow.result.motion;
+        if (!motion || !motion.path || motion.path.length < 2) return;
+        const segments = motion.path.length - 1;
+        const motionT = clamp((t - flow.impactAt) / Math.max(.001, 1 - flow.impactAt), 0, 0.999999);
+        const f = motionT * segments;
+        const i = Math.min(segments - 1, Math.floor(f));
+        const lt = ease(f - i);
+        motion.unit.renderX = lerp(motion.path[i].x, motion.path[i + 1].x, lt);
+        motion.unit.renderY = lerp(motion.path[i].y, motion.path[i + 1].y, lt);
+      }, () => {
+        resolveImpact();
+        const motion = flow.result && flow.result.motion;
+        if (motion) {
+          motion.unit.renderX = motion.unit.x;
+          motion.unit.renderY = motion.unit.y;
+        }
+      }, { visualBarrier: true, label: "impact" });
+
+      this.addStep(CONFIG.ANIMATION.SETTLE, step => {
+        if (!flow.valid) return cancelRemaining(step);
+        this.game.renderer.actionCue = {
+          type: "settle", actor: actor, card: card, target: flow.target,
+          aimCell: flow.aimCell, progress: 0
+        };
+      }, (step, t) => {
+        if (this.game.renderer.actionCue) this.game.renderer.actionCue.progress = t;
+      }, () => {
+        this.game.renderer.actionCue = null;
+      }, { visualBarrier: true, label: "settle" });
+    }
+    buildAllyAction(actor) {
+      const prep = this.game.hand.planAction(actor);
+      this.game.log(
+        actor.name + " 已装配 " + actor.skillBar.length + " 个技能 · 普通手牌上限 " + prep.handLimit,
+        "muted"
+      );
+      this.createHandPreparationSteps(actor, prep.operations);
+      this.createActionStartStep(actor, prep.finalState, prep.queue.length);
+      prep.queue.forEach(card => {
+        this.createRepositionStep(actor, card);
+        this.createCardStep(actor, card);
+      });
+      this.addEndTileStep(actor);
+    }
+    nearestTarget(unit) {
+      const targets = this.game.units.filter(u => u.alive && u.team !== unit.team);
+      return targets.sort((a, b) => manhattan(unit, a) - manhattan(unit, b) || a.id.localeCompare(b.id))[0] || null;
+    }
+    buildEnemyAction(actor) {
+      const target = this.nearestTarget(actor);
+      if (!target) {
+        this.addStep(80);
+        return;
+      }
+      const move = this.game.ai.chooseEnemyMove(actor, target);
+      this.game.log(actor.name + " 向 " + target.name + " 移动", "enemy");
+      this.createMoveStep(actor, move.path, CONFIG.ANIMATION.MOVE_PER_CELL);
+      this.addStep(CONFIG.ANIMATION.ATTACK, step => {
+        if (!actor.alive) return;
+        const newTarget = this.nearestTarget(actor);
+        if (!newTarget || manhattan(actor, newTarget) > actor.range) {
+          this.game.log(actor.name + " 未进入攻击范围", "muted");
+          return;
+        }
+        this.game.applyDamage(actor, newTarget, actor.attack, actor.type === "ranged" ? "远射" : "攻击");
+        if (actor.type === "ranged") {
+          this.game.renderer.addEffect("projectile", {
+            from: { x: actor.x, y: actor.y },
+            to: { x: newTarget.x, y: newTarget.y },
+            color: "#ef8b92",
+            shape: "thorn"
+          }, 340);
+        } else {
+          this.game.renderer.addEffect("slash", { x: newTarget.x, y: newTarget.y, color: "#ef7580" }, 300);
+        }
+        this.game.log(actor.name + " 攻击 " + newTarget.name, "enemy");
+      });
+      this.addEndTileStep(actor);
+    }
+    addEndTileStep(actor) {
+      this.addStep(CONFIG.ANIMATION.END_TILE, () => {
+        if (!actor.alive) return;
+        if (this.game.map.isDanger(actor.x, actor.y)) {
+          this.game.applyDamage(null, actor, CONFIG.HAZARD_DAMAGE, "危险格");
+        }
+        const burn = this.game.map.burnZones.find(z =>
+          z.x === actor.x && z.y === actor.y && z.team !== actor.team && z.expiresAt > this.time
+        );
+        if (burn && actor.alive) {
+          this.game.applyDamage(null, actor, CONFIG.BURN_DAMAGE, "燃烧");
+        }
+      });
+    }
+    finishAction() {
+      const actor = this.currentActor;
+      if (!actor) return;
+      actor.gauge = 0;
+      if (actor.team === "ally") {
+        actor.finishOwnTurnCooldowns();
+        this.game.hand.normalizeAfterAction(actor);
+      }
+      this.currentActor = null;
+      this.game.assertState();
+      this.checkVictory();
+      if (this.stepping) this.stepping = false;
+    }
+    checkVictory() {
+      const alliesAlive = this.game.units.some(u => u.alive && u.team === "ally");
+      const enemiesAlive = this.game.units.some(u => u.alive && u.team === "enemy");
+      if (alliesAlive && enemiesAlive) return false;
+      this.gameOver = true;
+      this.running = false;
+      this.stepping = false;
+      this.result = enemiesAlive ? "战斗失败" : "战斗胜利";
+      this.game.log("✦ " + this.result, enemiesAlive ? "warn" : "victory");
+      document.getElementById("live").textContent = this.result;
+      return true;
+    }
+    update(dt) {
+      if (this.gameOver) return;
+      const active = this.running || this.stepping;
+      if (!active) return;
+      let budget = Math.min(dt, 50) * this.speed;
+      let safety = 0;
+      while (safety++ < 50) {
+        if (!this.currentStep) {
+          if (this.sequence.length) {
+            this.currentStep = this.sequence.shift();
+            this.currentStep.elapsed = 0;
+            this.currentStep.started = true;
+            if (this.currentStep.onStart) this.currentStep.onStart(this.currentStep);
+          } else if (this.currentActor) {
+            this.finishAction();
+            if (!this.running && !this.stepping) return;
+            continue;
+          } else {
+            if (!this.running && !this.stepping) return;
+            this.startNextAction();
+            if (!this.currentActor) return;
+            continue;
+          }
+        }
+        const step = this.currentStep;
+        if (step.visualBarrier && !step.presented) {
+          step.presented = true;
+          if (step.onUpdate) step.onUpdate(step, 0);
+          return;
+        }
+        const remaining = step.duration - step.elapsed;
+        const advance = Math.min(Math.max(0, budget), remaining);
+        step.elapsed += advance;
+        budget -= advance;
+        if (step.onUpdate) step.onUpdate(step, clamp(step.elapsed / step.duration, 0, 1));
+        if (step.elapsed >= step.duration - 0.001) {
+          if (step.onEnd) step.onEnd(step);
+          this.currentStep = null;
+          if (step.visualBarrier) return;
+          if (budget <= 0) return;
+          continue;
+        }
+        return;
+      }
+    }
+    start() {
+      if (this.gameOver) return;
+      this.running = true;
+      this.stepping = false;
+    }
+    pause() {
+      this.running = false;
+      this.stepping = false;
+    }
+    stepOnce() {
+      if (this.gameOver) return;
+      this.running = false;
+      this.stepping = true;
+    }
+  }
+
+  class Renderer {
+    constructor(game, canvas) {
+      this.game = game;
+      this.canvas = canvas;
+      this.ctx = canvas.getContext("2d");
+      this.dpr = 1;
+      this.pixelScale = 1;
+      this.clock = 0;
+      this.effects = [];
+      this.actionCue = null;
+      this.cardRects = new Map();
+      this.layout = null;
+      this.resize();
+      window.addEventListener("resize", () => this.resize());
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener("resize", () => this.resize());
+      }
+    }
+    resize() {
+      this.dpr = Math.min(window.devicePixelRatio || 1, 3);
+      const rect = this.canvas.getBoundingClientRect();
+      const cssWidth = Math.max(320, Math.round(rect.width || window.innerWidth || 390));
+      const cssHeight = Math.max(560, Math.round(rect.height || window.innerHeight || 844));
+      CONFIG.WIDTH = cssWidth;
+      CONFIG.HEIGHT = cssHeight;
+      this.layout = this.createLayout(cssWidth, cssHeight);
+      CONFIG.CELL = this.layout.cell;
+      CONFIG.FIELD_X = this.layout.field.x;
+      CONFIG.FIELD_Y = this.layout.field.y;
+      CONFIG.FIELD_W = this.layout.field.w;
+      CONFIG.FIELD_H = this.layout.field.h;
+      this.pixelScale = this.dpr;
+      this.canvas.width = Math.max(1, Math.round(cssWidth * this.dpr));
+      this.canvas.height = Math.max(1, Math.round(cssHeight * this.dpr));
+      this.ctx.setTransform(this.pixelScale, 0, 0, this.pixelScale, 0, 0);
+      this.ctx.imageSmoothingEnabled = true;
+    }
+    createLayout(width, height) {
+      const desktop = width >= 900 && width / height >= 1.08;
+      if (desktop) {
+        const sideW = clamp(Math.floor(width * .245), 280, 390);
+        const centerW = width - sideW * 2 - 44;
+        const cell = clamp(Math.floor(Math.min((height - 40) / CONFIG.VIEW_ROWS, (centerW - 18) / CONFIG.VIEW_COLS)), 40, 84);
+        const fieldW = cell * 7;
+        const fieldH = cell * CONFIG.VIEW_ROWS;
+        const fieldX = Math.round((width - fieldW) / 2);
+        const fieldY = Math.max(18, Math.round((height - fieldH) / 2));
+        return {
+          desktop: true,
+          cell: cell,
+          field: { x: fieldX, y: fieldY, w: fieldW, h: fieldH },
+          left: { x: 18, y: 18, w: sideW - 34, h: height - 36 },
+          right: { x: width - sideW + 16, y: 18, w: sideW - 34, h: height - 36 },
+          handY: fieldY + fieldH - 122,
+          quickY: fieldY + fieldH - 42
+        };
+      }
+      const fieldY = 56;
+      const cell = clamp(Math.floor(Math.min((width - 12) / CONFIG.VIEW_COLS, (height - 194) / CONFIG.VIEW_ROWS)), 28, 56);
+      const fieldW = cell * 7;
+      const fieldH = cell * CONFIG.VIEW_ROWS;
+      return {
+        desktop: false,
+        cell: cell,
+        field: { x: Math.round((width - fieldW) / 2), y: fieldY, w: fieldW, h: fieldH },
+        handY: Math.min(height - 168, fieldY + fieldH - 98),
+        quickY: height - 54,
+        drawer: { x: Math.max(38, width - 336), y: 0, w: Math.min(336, width - 38), h: height }
+      };
+    }
+    addEffect(type, data, duration) {
+      this.effects.push({ type: type, data: data, age: 0, duration: duration || 400 });
+    }
+    addFloat(x, y, text, color) {
+      this.addEffect("float", { x: x, y: y, text: text, color: color }, 640);
+    }
+    getHandGeometry(owner) {
+      const f = this.layout.field;
+      const limit = owner ? this.game.hand.handLimit(owner) : 5;
+      const slots = Math.max(2, limit + 1);
+      const gap = this.layout.desktop ? 7 : 3;
+      const maxCardW = this.layout.desktop ? Math.min(76, (f.w - 64) / 6) : (f.w - 27) / 6;
+      const cardW = maxCardW;
+      const cardH = this.layout.desktop ? 96 : 75;
+      const totalW = cardW * slots + gap * (slots - 1);
+      return {
+        limit: limit, slots: slots, gap: gap, cardW: cardW, cardH: cardH,
+        startX: f.x + (f.w - totalW) / 2, baseY: this.layout.handY
+      };
+    }
+    getHandSlotRect(index, owner) {
+      const actor = this.game.battle.currentActor;
+      const actualOwner = owner || (actor && actor.team === "ally" ? actor : this.game.lastAllyActor || this.game.getSelectedAlly());
+      const g = this.getHandGeometry(actualOwner);
+      const center = (g.slots - 1) / 2;
+      const fan = Math.abs(index - center) / Math.max(1, center);
+      return {
+        x: g.startX + index * (g.cardW + g.gap),
+        y: g.baseY + fan * (this.layout.desktop ? 8 : 5),
+        w: g.cardW,
+        h: g.cardH
+      };
+    }
+    getCardRect(cardId) {
+      const rect = this.cardRects.get(cardId);
+      if (rect) return { x: rect.x, y: rect.y, w: rect.w, h: rect.h };
+      const f = this.layout.field;
+      const actor = this.game.battle.currentActor;
+      const owner = actor && actor.team === "ally" ? actor : this.game.lastAllyActor || this.game.getSelectedAlly();
+      if (owner) {
+        let index = owner.hand.findIndex(card => card.id === cardId);
+        if (owner.extraCard && owner.extraCard.id === cardId) index = this.game.hand.handLimit(owner);
+        if (index >= 0) return this.getHandSlotRect(index, owner);
+      }
+      return {
+        x: f.x + f.w / 2 - 32,
+        y: this.layout.handY,
+        w: 64,
+        h: 84
+      };
+    }
+    update(dt, active) {
+      this.clock += dt;
+      if (active) {
+        this.effects.forEach(e => e.age += dt * this.game.battle.speed);
+        this.effects = this.effects.filter(e => e.age < e.duration);
+        this.game.units.filter(u => !u.alive).forEach(u => {
+          u.deathFade = Math.max(0, u.deathFade - dt * this.game.battle.speed / 700);
+        });
+      }
+    }
+    panel(x, y, w, h, radius, alpha) {
+      const ctx = this.ctx;
+      ctx.save();
+      ctx.shadowColor = "rgba(0,0,0,.38)";
+      ctx.shadowBlur = 16;
+      ctx.shadowOffsetY = 6;
+      ctx.fillStyle = alpha || CONFIG.COLORS.panel;
+      roundRect(ctx, x, y, w, h, radius || 10);
+      ctx.fill();
+      ctx.shadowColor = "transparent";
+      ctx.strokeStyle = CONFIG.COLORS.panelLine;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.restore();
+    }
+    text(text, x, y, size, color, align, weight) {
+      const ctx = this.ctx;
+      ctx.save();
+      ctx.font = (weight || 500) + " " + size + "px \"PingFang SC\",\"Microsoft YaHei\",sans-serif";
+      ctx.fillStyle = color || CONFIG.COLORS.ink;
+      ctx.textAlign = align || "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, x, y);
+      ctx.restore();
+    }
+    drawBackground() {
+      const ctx = this.ctx;
+      const g = ctx.createLinearGradient(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+      g.addColorStop(0, "#313532");
+      g.addColorStop(0.48, "#222725");
+      g.addColorStop(1, "#15191b");
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+      ctx.save();
+      ctx.globalAlpha = 0.14;
+      ctx.fillStyle = "#8e7f5b";
+      ctx.beginPath();
+      ctx.arc(CONFIG.WIDTH * .5, -CONFIG.HEIGHT * .2, CONFIG.HEIGHT * .7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#2f5b52";
+      ctx.beginPath();
+      ctx.arc(CONFIG.WIDTH * .08, CONFIG.HEIGHT * .82, CONFIG.HEIGHT * .38, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      ctx.save();
+      ctx.strokeStyle = "rgba(190,169,119,.09)";
+      ctx.lineWidth = 2;
+      const spacing = 92;
+      for (let x = -spacing; x < CONFIG.WIDTH + spacing; x += spacing) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x + CONFIG.HEIGHT * .22, CONFIG.HEIGHT);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    button(x, y, w, h, label, id, active, accent) {
+      const ctx = this.ctx;
+      this.game.hitRegions.push({ type: "button", id: id, x: x, y: y, w: w, h: h });
+      ctx.save();
+      ctx.fillStyle = active ? (accent || "#4ebda6") : "rgba(15,19,20,.88)";
+      roundRect(ctx, x, y, w, h, 8);
+      ctx.fill();
+      ctx.strokeStyle = active ? "rgba(255,244,205,.82)" : "rgba(190,169,119,.42)";
+      ctx.stroke();
+      this.text(label, x + w / 2, y + h / 2 + .5, this.layout && this.layout.desktop ? 13 : 10, active ? "#fff" : CONFIG.COLORS.ink, "center", 700);
+      ctx.restore();
+    }
+    drawControls() {
+      const b = this.game.battle;
+      const state = b.gameOver ? b.result : b.running ? "自动战斗中" : b.stepping ? "执行单步" : "已暂停 · 可换技能";
+      if (this.layout.desktop) {
+        const r = this.layout.left;
+        this.panel(r.x, r.y, r.w, r.h, 18, "rgba(12,16,17,.88)");
+        this.text("风芽远征", r.x + 20, r.y + 27, 22, "#f3ead5", "left", 800);
+        this.text("自动战术控制台", r.x + 21, r.y + 50, 11, "#96a79f", "left", 650);
+        this.text(CONFIG.MAP_COLS + "×" + CONFIG.MAP_ROWS + " 四屏遗迹", r.x + r.w - 18, r.y + 29, 11, "#d3b773", "right", 700);
+        const gap = 7;
+        const w = (r.w - 40 - gap * 2) / 3;
+        let y = r.y + 70;
+        this.button(r.x + 14, y, w, 38, "开始", "start", b.running, "#439d84");
+        this.button(r.x + 14 + w + gap, y, w, 38, "暂停", "pause", !b.running && !b.stepping, "#526f78");
+        this.button(r.x + 14 + (w + gap) * 2, y, w, 38, "单步", "step", b.stepping, "#7567a2");
+        y += 46;
+        this.button(r.x + 14, y, w, 34, "1×", "speed1", b.speed === 1, "#477f94");
+        this.button(r.x + 14 + w + gap, y, w, 34, "2×", "speed2", b.speed === 2, "#477f94");
+        this.button(r.x + 14 + (w + gap) * 2, y, w, 34, "4×", "speed4", b.speed === 4, "#477f94");
+        y += 45;
+        this.button(r.x + 14, y, (r.w - 35) / 2, 32, "同种子重开", "sameSeed", false);
+        this.button(r.x + 21 + (r.w - 35) / 2, y, (r.w - 35) / 2, 32, "新种子重开", "newSeed", false);
+        this.text("种子 " + this.game.seed, r.x + 17, y + 48, 11, "#9aa8a2", "left", 650);
+        this.text(state, r.x + r.w - 17, y + 48, 11, b.gameOver ? "#ef7c7c" : "#73c2aa", "right", 700);
+        this.button(r.x + 14, r.y + 225, r.w - 28, 31, "配队与技能背包", "teamEditor", false, "#7d6744");
+      } else {
+        const y = 8;
+        const x = 7;
+        this.panel(4, 4, CONFIG.WIDTH - 8, 46, 14, "rgba(10,14,16,.88)");
+        this.button(x, y, 38, 36, "开始", "start", b.running, "#439d84");
+        this.button(x + 42, y, 38, 36, "暂停", "pause", !b.running && !b.stepping, "#526f78");
+        this.button(x + 84, y, 38, 36, "单步", "step", b.stepping, "#7567a2");
+        this.button(x + 127, y, 27, 36, "1×", "speed1", b.speed === 1, "#477f94");
+        this.button(x + 158, y, 27, 36, "2×", "speed2", b.speed === 2, "#477f94");
+        this.button(x + 189, y, 27, 36, "4×", "speed4", b.speed === 4, "#477f94");
+        this.button(x + 220, y, 43, 36, "配队", "teamEditor", false, "#7d6744");
+        this.button(CONFIG.WIDTH - 50, y, 43, 36, this.game.debugOpen ? "关闭" : "调试", "toggleDebug", this.game.debugOpen, "#8a7247");
+      }
+    }
+    drawTimeline() {
+      const units = this.game.units.filter(u => u.alive).slice().sort((a, b) => {
+        const ra = Math.max(0, 100 - a.gauge) / a.speed;
+        const rb = Math.max(0, 100 - b.gauge) / b.speed;
+        return ra - rb || b.speed - a.speed || a.id.localeCompare(b.id);
+      });
+      const f = this.layout.field;
+      const x = f.x + (this.layout.desktop ? 22 : 7);
+      const y = f.y + 10;
+      const w = f.w - (this.layout.desktop ? 44 : 14);
+      const h = this.layout.desktop ? 62 : 50;
+      this.panel(x, y, w, h, h / 2, "rgba(8,11,13,.86)");
+      this.text("回合 " + (this.game.battle.actionIndex + 1), x + 18, y + h / 2, this.layout.desktop ? 15 : 10, "#f1e7ce", "left", 800);
+      const startX = x + (this.layout.desktop ? 112 : 70);
+      const usable = w - (this.layout.desktop ? 132 : 80);
+      const spacing = usable / Math.max(1, units.length);
+      const radius = this.layout.desktop ? 19 : 14;
+      units.forEach((u, i) => {
+        const cx = startX + spacing * (i + .5);
+        const cy = y + h / 2;
+        const active = this.game.battle.currentActor === u;
+        this.ctx.save();
+        this.ctx.shadowColor = active ? u.color : "transparent";
+        this.ctx.shadowBlur = active ? 15 : 0;
+        this.ctx.fillStyle = active ? u.color : "rgba(92,99,94,.58)";
+        this.ctx.beginPath();
+        this.ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        this.ctx.fill();
+        this.ctx.strokeStyle = active ? "#fff1c8" : u.team === "ally" ? "#6fc3ad" : "#df7a82";
+        this.ctx.lineWidth = active ? 3 : 1.5;
+        this.ctx.stroke();
+        this.text(u.short, cx, cy - 2, this.layout.desktop ? 12 : 9, "#fff", "center", 800);
+        this.ctx.strokeStyle = "rgba(7,10,11,.68)";
+        this.ctx.lineWidth = 3;
+        this.ctx.beginPath();
+        this.ctx.arc(cx, cy, radius - 3, -.5 * Math.PI, 1.5 * Math.PI);
+        this.ctx.stroke();
+        this.ctx.strokeStyle = active ? "#fff4bd" : u.color;
+        this.ctx.beginPath();
+        this.ctx.arc(cx, cy, radius - 3, -.5 * Math.PI, (-.5 + 2 * clamp(u.gauge / 100, 0, 1)) * Math.PI);
+        this.ctx.stroke();
+        this.ctx.restore();
+      });
+    }
+    hashDecoration(x, y) {
+      let n = (x * 73856093) ^ (y * 19349663);
+      n = Math.imul(n ^ (n >>> 13), 1274126177);
+      return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+    }
+    drawTile(x, y, sx, sy) {
+      const ctx = this.ctx;
+      const h = this.hashDecoration(x, y);
+      const base = (x + y) % 2 ? CONFIG.COLORS.gridA : CONFIG.COLORS.gridB;
+      ctx.fillStyle = base;
+      ctx.fillRect(sx, sy, CONFIG.CELL, CONFIG.CELL);
+      const shade = ctx.createLinearGradient(sx, sy, sx + CONFIG.CELL, sy + CONFIG.CELL);
+      shade.addColorStop(0, "rgba(255,244,211,.12)");
+      shade.addColorStop(.55, "rgba(255,255,255,0)");
+      shade.addColorStop(1, "rgba(16,21,20,.24)");
+      ctx.fillStyle = shade;
+      ctx.fillRect(sx, sy, CONFIG.CELL, CONFIG.CELL);
+      ctx.strokeStyle = "rgba(35,39,37,.72)";
+      ctx.lineWidth = Math.max(1.5, CONFIG.CELL / 30);
+      ctx.strokeRect(sx + 1, sy + 1, CONFIG.CELL - 2, CONFIG.CELL - 2);
+      ctx.strokeStyle = "rgba(226,215,183,.16)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(sx + 3, sy + CONFIG.CELL - 3);
+      ctx.lineTo(sx + 3, sy + 3);
+      ctx.lineTo(sx + CONFIG.CELL - 3, sy + 3);
+      ctx.stroke();
+      if (h > .58 && !this.game.map.isObstacle(x, y) && !this.game.map.isDanger(x, y)) {
+        ctx.save();
+        ctx.strokeStyle = h > .82 ? "rgba(71,105,91,.46)" : "rgba(48,53,49,.35)";
+        ctx.lineWidth = Math.max(1, CONFIG.CELL / 42);
+        ctx.beginPath();
+        const s = CONFIG.CELL / 38;
+        ctx.moveTo(sx + 8 * s, sy + 31 * s);
+        ctx.lineTo(sx + 13 * s, sy + 22 * s);
+        ctx.lineTo(sx + 10 * s, sy + 15 * s);
+        ctx.lineTo(sx + 19 * s, sy + 9 * s);
+        if (h > .82) {
+          ctx.moveTo(sx + CONFIG.CELL - 8 * s, sy + CONFIG.CELL - 6 * s);
+          ctx.quadraticCurveTo(sx + CONFIG.CELL - 20 * s, sy + CONFIG.CELL - 12 * s, sx + CONFIG.CELL - 18 * s, sy + CONFIG.CELL - 24 * s);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+      if ((x === 6 || x === 7) && y % 5 === 2) {
+        ctx.save();
+        ctx.strokeStyle = "rgba(169,142,89,.20)";
+        ctx.lineWidth = Math.max(1, CONFIG.CELL / 34);
+        const m = CONFIG.CELL * .23;
+        ctx.strokeRect(sx + m, sy + m, CONFIG.CELL - m * 2, CONFIG.CELL - m * 2);
+        ctx.beginPath();
+        ctx.moveTo(sx + m, sy + CONFIG.CELL / 2);
+        ctx.lineTo(sx + CONFIG.CELL / 2, sy + m);
+        ctx.lineTo(sx + CONFIG.CELL - m, sy + CONFIG.CELL / 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+    drawObstacle(x, y) {
+      const p = this.game.map.worldToScreen(x, y);
+      const ctx = this.ctx;
+      const scale = clamp(CONFIG.CELL / 38, .9, 1.8);
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.scale(scale, scale);
+      ctx.fillStyle = "rgba(8,12,12,.34)";
+      ctx.beginPath();
+      ctx.ellipse(0, 11, 14, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      if ((x + y) % 2) {
+        const g = ctx.createLinearGradient(-12, -14, 10, 13);
+        g.addColorStop(0, "#a79e86");
+        g.addColorStop(1, "#575c57");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.moveTo(-11, 11); ctx.lineTo(-13, -8); ctx.lineTo(-5, -14);
+        ctx.lineTo(8, -11); ctx.lineTo(12, 10); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = "rgba(222,209,172,.35)";
+        ctx.stroke();
+        ctx.fillStyle = "#4f7668";
+        ctx.beginPath();
+        ctx.ellipse(-6, -10, 5, 2, -.4, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        const g = ctx.createLinearGradient(-10, -10, 12, 12);
+        g.addColorStop(0, "#c4d6cf");
+        g.addColorStop(1, "#879f9a");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.moveTo(-13, 9);
+        ctx.quadraticCurveTo(-13, -7, -3, -12);
+        ctx.quadraticCurveTo(10, -10, 13, 7);
+        ctx.quadraticCurveTo(3, 13, -13, 9);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,.45)";
+        ctx.beginPath();
+        ctx.moveTo(-7, -3);
+        ctx.quadraticCurveTo(-2, -8, 5, -7);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    drawDanger(x, y) {
+      const p = this.game.map.worldToScreen(x, y);
+      const ctx = this.ctx;
+      const scale = clamp(CONFIG.CELL / 38, .9, 1.8);
+      const pulse = .55 + Math.sin(this.clock / 280 + x + y) * .18;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.scale(scale, scale);
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = "rgba(245,157,101,.25)";
+      ctx.beginPath();
+      ctx.arc(0, 0, 14, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#e89a66";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(-11, -7); ctx.lineTo(-3, -2); ctx.lineTo(-7, 8);
+      ctx.moveTo(2, -12); ctx.lineTo(5, -3); ctx.lineTo(12, 2);
+      ctx.moveTo(-1, 3); ctx.lineTo(3, 11);
+      ctx.stroke();
+      ctx.restore();
+    }
+    drawBurn(z) {
+      const p = this.game.map.worldToScreen(z.x, z.y);
+      const ctx = this.ctx;
+      const scale = clamp(CONFIG.CELL / 38, .9, 1.8);
+      ctx.save();
+      ctx.translate(p.x, p.y + 3);
+      ctx.scale(scale, scale);
+      ctx.globalAlpha = .62;
+      for (let i = 0; i < 3; i++) {
+        const a = this.clock / 240 + i * 2.1 + z.x;
+        const px = Math.sin(a) * 8;
+        const py = Math.cos(a * .7) * 3;
+        ctx.fillStyle = i === 1 ? "#f7bd68" : "#f28668";
+        ctx.beginPath();
+        ctx.moveTo(px, py + 7);
+        ctx.quadraticCurveTo(px - 5, py, px, py - 8 - i * 2);
+        ctx.quadraticCurveTo(px + 6, py, px, py + 7);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    drawUnit(unit) {
+      if (!unit.alive && unit.deathFade <= 0) return;
+      const ctx = this.ctx;
+      const p = this.game.map.worldToScreen(unit.renderX, unit.renderY);
+      const alpha = unit.alive ? 1 : unit.deathFade;
+      const selected = this.game.selectedAllyId === unit.id;
+      const acting = this.game.battle.currentActor === unit;
+      const scale = clamp(CONFIG.CELL / 38, .95, 2.05);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(p.x, p.y);
+      ctx.scale(scale * (unit.type === "elite" ? 1.14 : 1), scale * (unit.type === "elite" ? 1.14 : 1));
+      if (selected || acting) {
+        const pulse = acting ? 2 + Math.sin(this.clock / 150) * 1.5 : 0;
+        ctx.strokeStyle = acting ? "#fff3a7" : "#68c7db";
+        ctx.lineWidth = acting ? 3 : 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, 20 + pulse, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.fillStyle = "rgba(35,70,70,.18)";
+      ctx.beginPath();
+      ctx.ellipse(0, 14, 17, 5.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      if (unit.team === "ally") {
+        const bob = acting ? Math.sin(this.clock / 115) * 1.2 : Math.sin(this.clock / 420 + unit.speed) * .45;
+        ctx.translate(0, bob);
+        if (unit.id === "a2") {
+          ctx.fillStyle = unit.color;
+          ctx.beginPath();
+          ctx.ellipse(-11, -5, 6, 12, -.45, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        if (unit.id === "a3") {
+          ctx.fillStyle = "#6c5a9c";
+          ctx.beginPath();
+          ctx.moveTo(-13, 5); ctx.lineTo(-7, -18); ctx.lineTo(4, -23); ctx.lineTo(14, 5); ctx.closePath();
+          ctx.fill();
+        }
+        ctx.fillStyle = "#3a4547";
+        ctx.beginPath();
+        ctx.moveTo(-9, 4); ctx.lineTo(-13, 15); ctx.lineTo(13, 15); ctx.lineTo(9, 4); ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = unit.color;
+        ctx.beginPath();
+        ctx.moveTo(-7, 4); ctx.lineTo(-10, 13); ctx.lineTo(10, 13); ctx.lineTo(7, 4); ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,244,218,.72)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = "#ffe3ca";
+        ctx.beginPath();
+        ctx.arc(0, -5, 11.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = unit.color;
+        ctx.beginPath();
+        ctx.arc(0, -8, 12, Math.PI, Math.PI * 2);
+        ctx.lineTo(11, -4);
+        ctx.quadraticCurveTo(6, -7, 3, -1);
+        ctx.quadraticCurveTo(0, -7, -3, -1);
+        ctx.quadraticCurveTo(-7, -7, -11, -4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,.72)";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(0, -5, 11.5, Math.PI * 1.04, Math.PI * 1.96);
+        ctx.stroke();
+        ctx.fillStyle = "#31444a";
+        ctx.beginPath();
+        ctx.arc(-3.6, -4, 1.25, 0, Math.PI * 2);
+        ctx.arc(3.6, -4, 1.25, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(145,82,81,.66)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(0, -1.5, 3, .25, Math.PI - .25);
+        ctx.stroke();
+        if (unit.id === "a1") {
+          ctx.fillStyle = "#7bd18e";
+          ctx.beginPath();
+          ctx.ellipse(-3, -18, 3.3, 7, -.65, 0, Math.PI * 2);
+          ctx.ellipse(3, -18, 3.3, 7, .65, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = "#d8f3c8";
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(12, 12); ctx.lineTo(15, -9); ctx.stroke();
+          ctx.fillStyle = "#9be8a4";
+          ctx.beginPath(); ctx.arc(15, -11, 4, 0, Math.PI * 2); ctx.fill();
+        } else if (unit.id === "a2") {
+          ctx.strokeStyle = "#f2dfbc";
+          ctx.lineWidth = 1.8;
+          ctx.beginPath(); ctx.arc(13, 2, 8, -1.45, 1.45); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(14, -6); ctx.lineTo(14, 10); ctx.stroke();
+        } else if (unit.id === "a3") {
+          ctx.fillStyle = "#d9c4ff";
+          ctx.beginPath(); ctx.arc(-14, 6, 4.5, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = "#fff";
+          ctx.beginPath(); ctx.moveTo(-10, 5); ctx.lineTo(-6, 2); ctx.stroke();
+        } else {
+          ctx.fillStyle = "#f3c75d";
+          ctx.beginPath();
+          ctx.moveTo(-7, -16); ctx.lineTo(-4, -21); ctx.lineTo(0, -16);
+          ctx.lineTo(4, -21); ctx.lineTo(8, -16); ctx.closePath(); ctx.fill();
+          ctx.strokeStyle = "#fff2cc";
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(12, 12); ctx.lineTo(16, -8); ctx.stroke();
+          ctx.fillStyle = "#f5d776";
+          ctx.beginPath(); ctx.moveTo(15, -11); ctx.lineTo(18, -6); ctx.lineTo(13, -7); ctx.closePath(); ctx.fill();
+        }
+      } else {
+        if (unit.type === "elite") {
+          ctx.fillStyle = "#5a344b";
+          ctx.beginPath();
+          ctx.ellipse(0, 3, 17, 15, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = "#d85d68";
+          ctx.lineWidth = 3;
+          ctx.stroke();
+          ctx.fillStyle = "#d9c29d";
+          ctx.beginPath();
+          ctx.moveTo(-12, -6); ctx.lineTo(-18, -18); ctx.lineTo(-7, -12); ctx.closePath();
+          ctx.moveTo(12, -6); ctx.lineTo(18, -18); ctx.lineTo(7, -12); ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = "#f4c65b";
+          ctx.beginPath();
+          ctx.moveTo(-8, -13); ctx.lineTo(-4, -20); ctx.lineTo(0, -14);
+          ctx.lineTo(4, -20); ctx.lineTo(9, -13); ctx.closePath(); ctx.fill();
+          ctx.fillStyle = "#fff0d6";
+          ctx.beginPath(); ctx.arc(-5, 0, 2, 0, Math.PI * 2); ctx.arc(5, 0, 2, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = "#2d1b27";
+          ctx.beginPath(); ctx.arc(-5, 0, .9, 0, Math.PI * 2); ctx.arc(5, 0, .9, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = "#f07b80";
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(-6, 8); ctx.quadraticCurveTo(0, 12, 7, 7); ctx.stroke();
+          ctx.fillStyle = "#86705e";
+          ctx.fillRect(-20, 7, 9, 6);
+          ctx.fillRect(11, 7, 9, 6);
+        } else if (unit.type === "ranged") {
+          ctx.fillStyle = "#754f72";
+          ctx.beginPath();
+          ctx.moveTo(-14, 10); ctx.lineTo(-9, -10); ctx.lineTo(0, -16); ctx.lineTo(10, -9); ctx.lineTo(14, 10); ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = "#e7868d";
+          ctx.beginPath(); ctx.arc(0, 1, 10, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = "#fff0da";
+          ctx.beginPath(); ctx.arc(-3.5, 0, 1.4, 0, Math.PI * 2); ctx.arc(3.5, 0, 1.4, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = "#fff1d3";
+          ctx.lineWidth = 1.7;
+          ctx.beginPath(); ctx.arc(13, 2, 8, -1.35, 1.35); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(14, -6); ctx.lineTo(14, 10); ctx.stroke();
+        } else {
+          ctx.fillStyle = "#d96772";
+          ctx.beginPath();
+          ctx.moveTo(-14, 10); ctx.quadraticCurveTo(-16, -5, -8, -11);
+          ctx.lineTo(-4, -17); ctx.lineTo(0, -11); ctx.lineTo(6, -17); ctx.lineTo(9, -10);
+          ctx.quadraticCurveTo(16, -3, 14, 10); ctx.closePath();
+          ctx.fill();
+          ctx.strokeStyle = "#f3b4af";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.fillStyle = "#fff0da";
+          ctx.beginPath(); ctx.arc(-4, -1, 1.7, 0, Math.PI * 2); ctx.arc(4, -1, 1.7, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = "#5b2836";
+          ctx.beginPath(); ctx.arc(-4, -1, .8, 0, Math.PI * 2); ctx.arc(4, -1, .8, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = "#713443";
+          ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.moveTo(-5, 6); ctx.lineTo(0, 3); ctx.lineTo(5, 6); ctx.stroke();
+        }
+      }
+      ctx.restore();
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      const labelY = p.y - (unit.type === "elite" ? 28 : 25) * scale;
+      ctx.fillStyle = "rgba(10,14,15,.78)";
+      roundRect(ctx, p.x - 18 * scale, labelY - 5.5 * scale, 36 * scale, 11 * scale, 4 * scale);
+      ctx.fill();
+      this.text(unit.name, p.x, labelY, Math.min(12, 7.5 * scale), "#fff", "center", 700);
+      ctx.fillStyle = "rgba(10,13,14,.72)";
+      roundRect(ctx, p.x - 16 * scale, p.y + 14 * scale, 32 * scale, 4.5 * scale, 2 * scale);
+      ctx.fill();
+      ctx.fillStyle = unit.team === "ally" ? "#65d4a9" : "#f0777f";
+      roundRect(ctx, p.x - 16 * scale, p.y + 14 * scale, 32 * scale * clamp(unit.hp / unit.maxHp, 0, 1), 4.5 * scale, 2 * scale);
+      ctx.fill();
+      ctx.fillStyle = "rgba(10,13,14,.62)";
+      roundRect(ctx, p.x - 16 * scale, p.y + 20 * scale, 32 * scale, 3 * scale, 2 * scale);
+      ctx.fill();
+      ctx.fillStyle = "#72b9db";
+      roundRect(ctx, p.x - 16 * scale, p.y + 20 * scale, 32 * scale * clamp(unit.gauge / 100, 0, 1), 3 * scale, 2 * scale);
+      ctx.fill();
+      this.text(Math.ceil(unit.hp) + (unit.shield > 0 ? "+" + Math.ceil(unit.shield) : ""), p.x, p.y + 9 * scale, Math.min(11, 7 * scale), "#fff4dc", "center", 750);
+      if (unit.shield > 0) {
+        ctx.fillStyle = "#5cd1c3";
+        ctx.beginPath();
+        ctx.moveTo(p.x - 22 * scale, p.y + 10 * scale);
+        ctx.lineTo(p.x - 17 * scale, p.y + 7 * scale);
+        ctx.lineTo(p.x - 12 * scale, p.y + 10 * scale);
+        ctx.lineTo(p.x - 13 * scale, p.y + 16 * scale);
+        ctx.lineTo(p.x - 17 * scale, p.y + 19 * scale);
+        ctx.lineTo(p.x - 21 * scale, p.y + 16 * scale);
+        ctx.closePath();
+        ctx.fill();
+      }
+      if (unit.vulnerableUntil > this.game.battle.time) {
+        ctx.strokeStyle = "#efa460";
+        ctx.lineWidth = Math.max(1.5, scale);
+        ctx.beginPath();
+        ctx.moveTo(p.x + 13 * scale, p.y + 7 * scale);
+        ctx.lineTo(p.x + 18 * scale, p.y + 12 * scale);
+        ctx.lineTo(p.x + 14 * scale, p.y + 15 * scale);
+        ctx.lineTo(p.x + 20 * scale, p.y + 20 * scale);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    drawWorldEffects() {
+      const ctx = this.ctx;
+      this.effects.forEach(e => {
+        const t = clamp(e.age / e.duration, 0, 1);
+        const d = e.data;
+        if (e.type === "projectile") {
+          const from = this.game.map.worldToScreen(d.from.x, d.from.y);
+          const to = this.game.map.worldToScreen(d.to.x, d.to.y);
+          const p = ease(Math.min(1, t * 1.4));
+          const x = lerp(from.x, to.x, p);
+          const y = lerp(from.y, to.y, p) - Math.sin(p * Math.PI) * 12;
+          ctx.save();
+          ctx.globalAlpha = 1 - Math.max(0, t - .75) * 4;
+          ctx.strokeStyle = d.color;
+          ctx.lineWidth = d.shape === "multi" ? 3 : 5;
+          ctx.lineCap = "round";
+          ctx.beginPath();
+          ctx.moveTo(lerp(from.x, to.x, Math.max(0, p - .12)), lerp(from.y, to.y, Math.max(0, p - .12)));
+          ctx.lineTo(x, y);
+          ctx.stroke();
+          ctx.fillStyle = "#fff";
+          ctx.beginPath();
+          ctx.arc(x, y, d.shape === "orb" ? 5 : 2.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+        if (e.type === "slash") {
+          const p = this.game.map.worldToScreen(d.x, d.y);
+          const s = CONFIG.CELL / 38;
+          ctx.save();
+          ctx.globalAlpha = Math.sin(Math.min(1, t * 1.2) * Math.PI) * .95;
+          ctx.strokeStyle = d.color;
+          ctx.shadowColor = d.color;
+          ctx.shadowBlur = 12 * s;
+          ctx.lineCap = "round";
+          ctx.lineWidth = (7 * (1 - t) + 2) * s;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, (12 + t * 17) * s, -.95, 1.95);
+          ctx.stroke();
+          if ((d.star || 1) === 3) {
+            ctx.globalAlpha *= .7;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, (18 + t * 22) * s, 2.2, 5.5);
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
+        if (e.type === "aura" || e.type === "burst") {
+          const p = this.game.map.worldToScreen(d.x, d.y);
+          ctx.save();
+          ctx.globalAlpha = (1 - t) * .75;
+          ctx.strokeStyle = d.color;
+          ctx.lineWidth = 4 * (1 - t) + 1;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 5 + t * 24, 0, Math.PI * 2);
+          ctx.stroke();
+          if (e.type === "burst") {
+            for (let i = 0; i < 6; i++) {
+              const a = i * Math.PI / 3;
+              ctx.beginPath();
+              ctx.moveTo(p.x + Math.cos(a) * 5, p.y + Math.sin(a) * 5);
+              ctx.lineTo(p.x + Math.cos(a) * (12 + t * 18), p.y + Math.sin(a) * (12 + t * 18));
+              ctx.stroke();
+            }
+          }
+          ctx.restore();
+        }
+        if (e.type === "shield") {
+          const p = this.game.map.worldToScreen(d.x, d.y);
+          const s = CONFIG.CELL / 38;
+          ctx.save();
+          ctx.globalAlpha = Math.sin(t * Math.PI) * .88;
+          ctx.strokeStyle = d.color;
+          ctx.fillStyle = d.color + "2f";
+          ctx.shadowColor = d.color;
+          ctx.shadowBlur = 15 * s;
+          const layers = Math.max(1, d.star || 1);
+          for (let layer = 0; layer < layers; layer++) {
+            const r = (15 + layer * 4 + t * 11) * s;
+            ctx.beginPath();
+            for (let i = 0; i < 6; i++) {
+              const a = -Math.PI / 2 + i * Math.PI / 3;
+              const px = p.x + Math.cos(a) * r;
+              const py = p.y + Math.sin(a) * r;
+              if (!i) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+            }
+            ctx.closePath();
+            ctx.lineWidth = Math.max(1.5, 3.2 * s - layer * .5);
+            if (!layer) ctx.fill();
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
+        if (e.type === "chain") {
+          const from = this.game.map.worldToScreen(d.from.x, d.from.y);
+          const target = d.targetUnit;
+          const to = this.game.map.worldToScreen(target.renderX, target.renderY);
+          const s = CONFIG.CELL / 38;
+          ctx.save();
+          ctx.globalAlpha = Math.sin(t * Math.PI) * .95;
+          ctx.strokeStyle = d.color;
+          ctx.lineWidth = 3 * s;
+          ctx.shadowColor = d.color;
+          ctx.shadowBlur = 10 * s;
+          ctx.setLineDash([7 * s, 5 * s]);
+          ctx.lineDashOffset = -t * 45 * s;
+          ctx.beginPath();
+          ctx.moveTo(from.x, from.y);
+          ctx.lineTo(to.x, to.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          for (let i = 1; i <= 5; i++) {
+            const q = i / 6;
+            const x = lerp(to.x, from.x, q);
+            const y = lerp(to.y, from.y, q) + Math.sin(q * Math.PI * 4 + t * 9) * 3 * s;
+            ctx.beginPath();
+            ctx.arc(x, y, 2.4 * s, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
+        if (e.type === "sunder") {
+          const p = this.game.map.worldToScreen(d.x, d.y);
+          const s = CONFIG.CELL / 38;
+          ctx.save();
+          ctx.globalAlpha = Math.sin(t * Math.PI) * .96;
+          ctx.strokeStyle = d.color;
+          ctx.fillStyle = d.color;
+          ctx.shadowColor = d.color;
+          ctx.shadowBlur = 12 * s;
+          ctx.lineWidth = 3 * s;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, (14 + t * 8) * s, -.25, Math.PI + .25);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(p.x - 5 * s, p.y - 18 * s);
+          ctx.lineTo(p.x + 2 * s, p.y - 3 * s);
+          ctx.lineTo(p.x - 4 * s, p.y + 2 * s);
+          ctx.lineTo(p.x + 7 * s, p.y + 18 * s);
+          ctx.stroke();
+          for (let i = 0; i < 5; i++) {
+            const a = i * 1.37 - .6;
+            const r = (12 + t * 18) * s;
+            ctx.save();
+            ctx.translate(p.x + Math.cos(a) * r, p.y + Math.sin(a) * r);
+            ctx.rotate(a);
+            ctx.fillRect(-2 * s, -3 * s, 4 * s, 6 * s);
+            ctx.restore();
+          }
+          ctx.restore();
+        }
+        if (e.type === "fireball") {
+          const from = this.game.map.worldToScreen(d.from.x, d.from.y);
+          const to = this.game.map.worldToScreen(d.to.x, d.to.y);
+          const s = CONFIG.CELL / 38;
+          const travel = ease(clamp(t / .58, 0, 1));
+          const x = lerp(from.x, to.x, travel);
+          const y = lerp(from.y, to.y, travel) - Math.sin(travel * Math.PI) * 18 * s;
+          ctx.save();
+          ctx.globalAlpha = 1 - clamp((t - .78) / .22, 0, 1);
+          ctx.strokeStyle = "#f46c42";
+          ctx.lineWidth = 8 * s;
+          ctx.lineCap = "round";
+          ctx.beginPath();
+          ctx.moveTo(lerp(from.x, to.x, Math.max(0, travel - .16)), lerp(from.y, to.y, Math.max(0, travel - .16)));
+          ctx.lineTo(x, y);
+          ctx.stroke();
+          const g = ctx.createRadialGradient(x - 2 * s, y - 2 * s, 1, x, y, 11 * s);
+          g.addColorStop(0, "#fff6b2");
+          g.addColorStop(.35, "#ffc14e");
+          g.addColorStop(1, "rgba(239,76,47,0)");
+          ctx.fillStyle = g;
+          ctx.shadowColor = "#ff793f";
+          ctx.shadowBlur = 18 * s;
+          ctx.beginPath();
+          ctx.arc(x, y, 11 * s, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+        if (e.type === "heal") {
+          const p = this.game.map.worldToScreen(d.x, d.y);
+          const s = CONFIG.CELL / 38;
+          ctx.save();
+          ctx.globalAlpha = Math.sin(t * Math.PI) * .92;
+          ctx.strokeStyle = d.color;
+          ctx.shadowColor = d.color;
+          ctx.shadowBlur = 12 * s;
+          ctx.lineWidth = 3 * s;
+          ctx.beginPath();
+          ctx.ellipse(p.x, p.y + 11 * s, (24 - t * 7) * s, (9 - t * 2) * s, 0, 0, Math.PI * 2);
+          ctx.stroke();
+          for (let i = 0; i < 7 + (d.star || 1); i++) {
+            const a = i * 2.14;
+            const px = p.x + Math.sin(a) * (7 + i % 3 * 6) * s;
+            const py = p.y + 17 * s - t * (33 + i % 3 * 7) * s;
+            ctx.save();
+            ctx.translate(px, py);
+            ctx.rotate(a + t * 2);
+            ctx.fillStyle = i % 2 ? "#d8ffd4" : d.color;
+            ctx.beginPath();
+            ctx.ellipse(0, 0, 2.5 * s, 5 * s, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
+          ctx.fillStyle = "#eaffdd";
+          ctx.fillRect(p.x - 3 * s, p.y - 13 * s, 6 * s, 22 * s);
+          ctx.fillRect(p.x - 11 * s, p.y - 5 * s, 22 * s, 6 * s);
+          ctx.restore();
+        }
+        if (e.type === "charge") {
+          const s = CONFIG.CELL / 38;
+          ctx.save();
+          ctx.globalAlpha = (1 - t) * .82;
+          ctx.strokeStyle = d.color;
+          ctx.shadowColor = d.color;
+          ctx.shadowBlur = 13 * s;
+          ctx.lineCap = "round";
+          for (let lane = -1; lane <= 1; lane++) {
+            ctx.lineWidth = (lane ? 2 : 5) * s;
+            ctx.beginPath();
+            d.path.forEach((node, i) => {
+              const p = this.game.map.worldToScreen(node.x, node.y);
+              if (!i) ctx.moveTo(p.x + lane * 5 * s, p.y); else ctx.lineTo(p.x + lane * 5 * s, p.y);
+            });
+            ctx.stroke();
+          }
+          const hit = this.game.map.worldToScreen(d.target.x, d.target.y);
+          ctx.lineWidth = 4 * s;
+          ctx.beginPath();
+          ctx.arc(hit.x, hit.y, (10 + t * 25) * s, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+        if (e.type === "rapid") {
+          const from = this.game.map.worldToScreen(d.from.x, d.from.y);
+          const to = this.game.map.worldToScreen(d.to.x, d.to.y);
+          const s = CONFIG.CELL / 38;
+          ctx.save();
+          ctx.shadowColor = d.color;
+          ctx.shadowBlur = 10 * s;
+          for (let i = 0; i < d.hits; i++) {
+            const local = clamp((t - i * .13) / .42, 0, 1);
+            if (local <= 0 || local >= 1) continue;
+            const q = ease(local);
+            const side = (i - (d.hits - 1) / 2) * 4 * s;
+            const x = lerp(from.x, to.x, q) + side;
+            const y = lerp(from.y, to.y, q) - Math.sin(q * Math.PI) * (7 + i * 2) * s;
+            ctx.globalAlpha = Math.sin(local * Math.PI);
+            ctx.strokeStyle = d.color;
+            ctx.lineWidth = 3 * s;
+            ctx.beginPath();
+            ctx.moveTo(lerp(from.x, to.x, Math.max(0, q - .12)) + side, lerp(from.y, to.y, Math.max(0, q - .12)));
+            ctx.lineTo(x, y);
+            ctx.stroke();
+            ctx.fillStyle = "#fff3a2";
+            ctx.beginPath();
+            ctx.arc(x, y, 3.5 * s, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.restore();
+        }
+        if (e.type === "float") {
+          const p = this.game.map.worldToScreen(d.x, d.y);
+          ctx.save();
+          ctx.globalAlpha = Math.sin(Math.min(1, t) * Math.PI);
+          ctx.font = "700 11px \"PingFang SC\",\"Microsoft YaHei\",sans-serif";
+          ctx.textAlign = "center";
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = "rgba(255,255,255,.9)";
+          ctx.strokeText(d.text, p.x, p.y - 14 - t * 22);
+          ctx.fillStyle = d.color;
+          ctx.fillText(d.text, p.x, p.y - 14 - t * 22);
+          ctx.restore();
+        }
+      });
+    }
+    drawActionWorldCue() {
+      const cue = this.actionCue;
+      if (!cue || !cue.aimCell || !["windup", "impact", "settle"].includes(cue.type)) return;
+      const ctx = this.ctx;
+      const t = clamp(cue.progress || 0, 0, 1);
+      const def = SKILL_DEFS[cue.card.skill];
+      const target = this.game.map.worldToScreen(cue.aimCell.x, cue.aimCell.y);
+      const actor = this.game.map.worldToScreen(cue.actor.renderX, cue.actor.renderY);
+      const s = CONFIG.CELL / 38;
+      ctx.save();
+      const alpha = cue.type === "settle" ? 1 - t : cue.type === "impact" ? 1 - t * .72 : .45 + t * .55;
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = def.color;
+      ctx.fillStyle = def.color;
+      ctx.shadowColor = def.color;
+      ctx.shadowBlur = 15 * s;
+      ctx.lineCap = "round";
+      ctx.lineWidth = 2.5 * s;
+      ctx.beginPath();
+      ctx.arc(actor.x, actor.y, (17 + Math.sin(t * Math.PI) * 8) * s, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([7 * s, 6 * s]);
+      ctx.lineDashOffset = -t * 28 * s;
+      ctx.beginPath();
+      ctx.arc(target.x, target.y, (19 + (1 - t) * 11) * s, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (["pull", "sunder", "fireball", "rapid", "charge"].includes(cue.card.skill)) {
+        ctx.globalAlpha *= .72;
+        ctx.beginPath();
+        ctx.moveTo(actor.x, actor.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+      }
+      if (cue.card.skill === "guard") {
+        const r = 22 * s;
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+          const a = -Math.PI / 2 + i * Math.PI / 3;
+          const x = target.x + Math.cos(a) * r;
+          const y = target.y + Math.sin(a) * r;
+          if (!i) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.stroke();
+      }
+      if (cue.card.skill === "slash") {
+        ctx.lineWidth = 5 * s;
+        ctx.beginPath();
+        ctx.arc(target.x, target.y, 21 * s, -1.1, 1.7);
+        ctx.stroke();
+      }
+      if (cue.card.skill === "heal") {
+        ctx.fillRect(target.x - 3 * s, target.y - 18 * s, 6 * s, 36 * s);
+        ctx.fillRect(target.x - 18 * s, target.y - 3 * s, 36 * s, 6 * s);
+      }
+      if (cue.card.skill === "sunder") {
+        ctx.beginPath();
+        ctx.moveTo(target.x - 8 * s, target.y - 20 * s);
+        ctx.lineTo(target.x + 3 * s, target.y - 4 * s);
+        ctx.lineTo(target.x - 4 * s, target.y + 3 * s);
+        ctx.lineTo(target.x + 9 * s, target.y + 20 * s);
+        ctx.stroke();
+      }
+      if (cue.card.skill === "fireball") {
+        ctx.beginPath();
+        ctx.arc(target.x, target.y, (8 + t * 13) * s, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (cue.card.skill === "rapid") {
+        for (let i = -1; i <= 1; i++) {
+          ctx.beginPath();
+          ctx.moveTo(actor.x + i * 4 * s, actor.y);
+          ctx.lineTo(target.x + i * 7 * s, target.y);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+    drawBattlefield() {
+      const ctx = this.ctx;
+      this.panel(CONFIG.FIELD_X - 9, CONFIG.FIELD_Y - 9, CONFIG.FIELD_W + 18, CONFIG.FIELD_H + 18, 15, "rgba(9,12,13,.94)");
+      ctx.save();
+      ctx.strokeStyle = "rgba(176,147,92,.55)";
+      ctx.lineWidth = 3;
+      roundRect(ctx, CONFIG.FIELD_X - 5, CONFIG.FIELD_Y - 5, CONFIG.FIELD_W + 10, CONFIG.FIELD_H + 10, 11);
+      ctx.stroke();
+      ctx.strokeStyle = "rgba(225,211,171,.15)";
+      ctx.lineWidth = 1;
+      roundRect(ctx, CONFIG.FIELD_X - 1, CONFIG.FIELD_Y - 1, CONFIG.FIELD_W + 2, CONFIG.FIELD_H + 2, 8);
+      ctx.stroke();
+      ctx.restore();
+      this.game.hitRegions.push({
+        type: "field", id: "field",
+        x: CONFIG.FIELD_X, y: CONFIG.FIELD_Y, w: CONFIG.FIELD_W, h: CONFIG.FIELD_H
+      });
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(CONFIG.FIELD_X, CONFIG.FIELD_Y, CONFIG.FIELD_W, CONFIG.FIELD_H);
+      ctx.clip();
+      const startX = Math.floor(this.game.map.cameraX);
+      const startY = Math.floor(this.game.map.cameraY);
+      const endX = Math.min(CONFIG.MAP_COLS, Math.ceil(this.game.map.cameraX + CONFIG.VIEW_COLS));
+      const endY = Math.min(CONFIG.MAP_ROWS, Math.ceil(this.game.map.cameraY + CONFIG.VIEW_ROWS));
+      for (let y = startY; y < endY; y++) {
+        for (let x = startX; x < endX; x++) {
+          const sx = CONFIG.FIELD_X + (x - this.game.map.cameraX) * CONFIG.CELL;
+          const sy = CONFIG.FIELD_Y + (y - this.game.map.cameraY) * CONFIG.CELL;
+          this.drawTile(x, y, sx, sy);
+        }
+      }
+      this.game.map.dangers.forEach(k => {
+        const p = k.split(",").map(Number);
+        this.drawDanger(p[0], p[1]);
+      });
+      this.game.map.burnZones.forEach(z => this.drawBurn(z));
+      this.game.map.obstacles.forEach(k => {
+        const p = k.split(",").map(Number);
+        this.drawObstacle(p[0], p[1]);
+      });
+      this.game.units.filter(u => u.alive || u.deathFade > 0)
+        .slice().sort((a, b) => a.renderY - b.renderY)
+        .forEach(u => this.drawUnit(u));
+      this.drawWorldEffects();
+      this.drawActionWorldCue();
+      ctx.restore();
+
+      ctx.save();
+      ctx.strokeStyle = "rgba(238,224,189,.42)";
+      ctx.lineWidth = 2;
+      roundRect(ctx, CONFIG.FIELD_X, CONFIG.FIELD_Y, CONFIG.FIELD_W, CONFIG.FIELD_H, 8);
+      ctx.stroke();
+      const cap = Math.max(8, CONFIG.CELL * .18);
+      ctx.fillStyle = "rgba(167,139,86,.74)";
+      [[CONFIG.FIELD_X, CONFIG.FIELD_Y], [CONFIG.FIELD_X + CONFIG.FIELD_W, CONFIG.FIELD_Y],
+       [CONFIG.FIELD_X, CONFIG.FIELD_Y + CONFIG.FIELD_H], [CONFIG.FIELD_X + CONFIG.FIELD_W, CONFIG.FIELD_Y + CONFIG.FIELD_H]].forEach(c => {
+        ctx.beginPath();
+        ctx.arc(c[0], c[1], cap, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "rgba(34,38,35,.95)";
+        ctx.beginPath();
+        ctx.arc(c[0], c[1], cap * .55, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "rgba(167,139,86,.74)";
+      });
+      ctx.restore();
+    }
+    drawSideInfo() {
+      const selected = this.game.getSelectedAlly();
+      if (!selected) return;
+      let x, y, w, h;
+      if (this.layout.desktop) {
+        const r = this.layout.left;
+        x = r.x + 14; y = r.y + 258; w = r.w - 28; h = 126;
+      } else if (this.game.debugOpen) {
+        const r = this.layout.drawer;
+        x = r.x + 14; y = 144; w = Math.max(142, r.w - 126); h = 114;
+      } else {
+        x = this.layout.field.x + 8; y = this.layout.field.y + 68; w = 68; h = 76;
+      }
+      this.panel(x, y, w, h, 14, "rgba(9,13,14,.78)");
+      const compact = !this.layout.desktop && !this.game.debugOpen;
+      const cx = compact ? x + w / 2 : x + 48;
+      const cy = compact ? y + 28 : y + 61;
+      const radius = compact ? 18 : 31;
+      this.ctx.save();
+      this.ctx.shadowColor = selected.color;
+      this.ctx.shadowBlur = 15;
+      this.ctx.fillStyle = selected.color;
+      this.ctx.beginPath();
+      this.ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      this.ctx.fill();
+      this.ctx.strokeStyle = "rgba(255,245,211,.88)";
+      this.ctx.lineWidth = 2;
+      this.ctx.stroke();
+      this.ctx.restore();
+      this.text(selected.short, cx, cy, compact ? 14 : 20, "#fff", "center", 800);
+      if (compact) {
+        this.text(selected.name, x + w / 2, y + 56, 10, "#fff1dc", "center", 750);
+        this.text(Math.ceil(selected.hp) + "/" + selected.maxHp, x + w / 2, y + 69, 8, "#a9c6b9", "center", 650);
+      } else {
+        const tx = x + 91;
+        this.text("当前单位", tx, y + 20, 10, "#a4afa9", "left", 650);
+        this.text(selected.name, tx, y + 45, 19, "#f7ecd5", "left", 800);
+        this.text("生命  " + Math.ceil(selected.hp) + " / " + selected.maxHp, tx, y + 72, 11, "#79d1ad", "left", 700);
+        this.text(
+          "护盾 " + Math.ceil(selected.shield) + "  ·  AP " + selected.actionPoints + "/" + selected.maxActionPoints + "  ·  速度 " + selected.speed,
+          tx, y + 94, 11, "#aebcb5", "left", 650
+        );
+        this.ctx.fillStyle = "rgba(255,255,255,.10)";
+        roundRect(this.ctx, tx, y + 108, Math.max(20, w - 105), 5, 3);
+        this.ctx.fill();
+        this.ctx.fillStyle = selected.color;
+        roundRect(this.ctx, tx, y + 108, Math.max(20, w - 105) * clamp(selected.hp / selected.maxHp, 0, 1), 5, 3);
+        this.ctx.fill();
+      }
+    }
+    drawMinimap() {
+      let x, y, w, h;
+      if (this.layout.desktop) {
+        const r = this.layout.right;
+        w = Math.min(148, r.w - 42);
+        h = w * CONFIG.MAP_ROWS / CONFIG.MAP_COLS;
+        x = r.x + (r.w - w) / 2;
+        y = r.y + 64;
+      } else if (this.game.debugOpen) {
+        const r = this.layout.drawer;
+        w = 62; h = w * CONFIG.MAP_ROWS / CONFIG.MAP_COLS;
+        x = r.x + r.w - w - 18;
+        y = 152;
+      } else {
+        w = 42; h = w * CONFIG.MAP_ROWS / CONFIG.MAP_COLS;
+        x = this.layout.field.x + this.layout.field.w - w - 8;
+        y = this.layout.field.y + 68;
+      }
+      this.panel(x - 5, y - 5, w + 10, h + 10, 10, "rgba(7,11,12,.80)");
+      this.game.hitRegions.push({ type: "minimap", id: "minimap", x: x, y: y, w: w, h: h });
+      const ctx = this.ctx;
+      ctx.save();
+      ctx.fillStyle = "#454d48";
+      roundRect(ctx, x, y, w, h, 5);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(205,181,126,.32)";
+      ctx.lineWidth = 1;
+      for (let gy = 1; gy < 2; gy++) {
+        ctx.beginPath(); ctx.moveTo(x, y + h * gy / 2); ctx.lineTo(x + w, y + h * gy / 2); ctx.stroke();
+      }
+      for (let gx = 1; gx < 2; gx++) {
+        ctx.beginPath(); ctx.moveTo(x + w * gx / 2, y); ctx.lineTo(x + w * gx / 2, y + h); ctx.stroke();
+      }
+      this.game.map.obstacles.forEach(k => {
+        const p = k.split(",").map(Number);
+        ctx.fillStyle = "rgba(18,24,22,.72)";
+        ctx.fillRect(x + p[0] / CONFIG.MAP_COLS * w, y + p[1] / CONFIG.MAP_ROWS * h, Math.max(1.5, w / 70), Math.max(1.5, h / 100));
+      });
+      this.game.units.filter(u => u.alive).forEach(u => {
+        ctx.fillStyle = u.team === "ally" ? "#5ee0b5" : "#ff737d";
+        ctx.beginPath();
+        ctx.arc(x + (u.x + .5) / CONFIG.MAP_COLS * w, y + (u.y + .5) / CONFIG.MAP_ROWS * h, u === this.game.battle.currentActor ? Math.max(2.7, w / 42) : Math.max(1.7, w / 72), 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.strokeStyle = "#71d6e7";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(
+        x + this.game.map.cameraX / CONFIG.MAP_COLS * w,
+        y + this.game.map.cameraY / CONFIG.MAP_ROWS * h,
+        CONFIG.VIEW_COLS / CONFIG.MAP_COLS * w,
+        CONFIG.VIEW_ROWS / CONFIG.MAP_ROWS * h
+      );
+      ctx.restore();
+      if (this.layout.desktop) {
+        this.text("世界地图 · 点击定位", x + w / 2, y - 11, 10, "#b5b9ae", "center", 700);
+        this.text("四个视口区域", x + w / 2, y + h + 18, 10, "#d4b76e", "center", 700);
+      }
+    }
+    drawCard(card, x, y, w, h, extra, owner, silentEmpty, suppressShadow) {
+      const ctx = this.ctx;
+      const def = card ? SKILL_DEFS[card.skill] : null;
+      const cooling = card && owner && owner.isCooling(card.skill);
+      ctx.save();
+      ctx.shadowColor = suppressShadow ? "transparent" : card ? (cooling ? "rgba(0,0,0,.4)" : def.color + "88") : "transparent";
+      ctx.shadowBlur = suppressShadow ? 0 : card ? Math.max(8, w * .16) : 0;
+      ctx.shadowOffsetY = 5;
+      const g = ctx.createLinearGradient(x, y, x, y + h);
+      if (card) {
+        g.addColorStop(0, cooling ? "#34393a" : "#ede1c7");
+        g.addColorStop(.14, cooling ? "#282d2e" : "#c9b995");
+        g.addColorStop(.16, "#242929");
+        g.addColorStop(1, "#111617");
+      } else {
+        g.addColorStop(0, "rgba(58,64,61,.28)");
+        g.addColorStop(1, "rgba(16,20,21,.34)");
+      }
+      ctx.fillStyle = g;
+      roundRect(ctx, x, y, w, h, Math.max(7, w * .13));
+      ctx.fill();
+      ctx.shadowColor = "transparent";
+      ctx.strokeStyle = extra ? "#d5b65f" : card ? def.color : "rgba(201,185,145,.18)";
+      ctx.lineWidth = extra ? 2.5 : card ? 2 : 1;
+      ctx.stroke();
+      if (card) {
+        ctx.fillStyle = def.color;
+        roundRect(ctx, x + 4, y + 4, w - 8, Math.max(6, h * .08), 4);
+        ctx.fill();
+        ctx.globalAlpha = cooling ? .48 : 1;
+        const iconR = Math.min(w * .25, h * .18);
+        ctx.fillStyle = def.color + "38";
+        ctx.beginPath();
+        ctx.arc(x + w / 2, y + h * .38, iconR, 0, Math.PI * 2);
+        ctx.fill();
+        this.text(def.short, x + w / 2, y + h * .38, Math.max(13, Math.min(22, w * .28)), cooling ? "#7e8988" : "#fff7df", "center", 850);
+        this.text(def.name, x + w / 2, y + h * .66, Math.max(8, Math.min(12, w * .15)), cooling ? "#7d8786" : "#eee2ca", "center", 750);
+        this.text("★".repeat(card.star), x + w / 2, y + h * .81, Math.max(7, Math.min(11, w * .14)), "#f2c45f", "center", 800);
+        if (cooling) {
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = "rgba(7,10,11,.74)";
+          roundRect(ctx, x + 4, y + h - Math.max(18, h * .19), w - 8, Math.max(14, h * .15), 6);
+          ctx.fill();
+          this.text(owner.cooldownLeft(card.skill) + "回合", x + w / 2, y + h - Math.max(10, h * .105), Math.max(8, w * .13), "#bac6c2", "center", 800);
+        }
+      } else if (!silentEmpty) {
+        this.text("空", x + w / 2, y + h / 2, Math.max(9, w * .15), "#6f7b77", "center", 650);
+      }
+      if (extra) {
+        this.text("保留", x + w / 2, y + h + 10, Math.max(8, w * .13), "#e2c775", "center", 750);
+      }
+      ctx.restore();
+    }
+    drawHand() {
+      this.cardRects.clear();
+      const actor = this.game.battle.currentActor;
+      const owner = actor && actor.team === "ally" ? actor : this.game.lastAllyActor || this.game.getSelectedAlly();
+      const f = this.layout.field;
+      const g = this.getHandGeometry(owner);
+      const cardH = g.cardH;
+      const baseY = g.baseY;
+      const bgY = baseY - 20;
+      const grad = this.ctx.createLinearGradient(0, bgY, 0, baseY + cardH + 22);
+      grad.addColorStop(0, "rgba(6,9,10,0)");
+      grad.addColorStop(.46, "rgba(6,9,10,.56)");
+      grad.addColorStop(1, "rgba(6,9,10,.82)");
+      this.ctx.fillStyle = grad;
+      this.ctx.fillRect(f.x + 2, bgY, f.w - 4, cardH + 45);
+      this.text(
+        "行动手牌 · " + (owner ? owner.name + " · 上限 " + g.limit + " · AP " + owner.actionPoints + "/" + owner.maxActionPoints : "—"),
+        f.x + f.w / 2, baseY - 10, this.layout.desktop ? 12 : 9, "#eee4cf", "center", 750
+      );
+      const hidden = new Set();
+      if (this.actionCue && this.actionCue.type === "mergeCards") {
+        this.actionCue.pair.forEach(card => hidden.add(card.id));
+        (this.actionCue.shiftCards || []).forEach(item => hidden.add(item.card.id));
+      }
+      if (this.actionCue && this.actionCue.type === "sortHand") {
+        (this.actionCue.items || []).forEach(item => hidden.add(item.card.id));
+      }
+      for (let i = 0; i < g.limit; i++) {
+        const card = owner && owner.hand[i];
+        const r = this.getHandSlotRect(i, owner);
+        if (card) this.cardRects.set(card.id, r);
+        const isHidden = !!card && hidden.has(card.id);
+        this.drawCard(card && !isHidden ? card : null, r.x, r.y, r.w, r.h, false, owner, isHidden);
+      }
+      const extra = owner && owner.extraCard;
+      const er = this.getHandSlotRect(g.limit, owner);
+      if (extra) this.cardRects.set(extra.id, er);
+      const extraHidden = !!extra && hidden.has(extra.id);
+      this.drawCard(extra && !extraHidden ? extra : null, er.x, er.y, er.w, er.h, true, owner, extraHidden);
+    }
+    drawSkills() {
+      const unit = this.game.getSelectedAlly();
+      if (!unit) return;
+      let originX, originY, cols, gap, w, h;
+      if (this.layout.desktop) {
+        const r = this.layout.left;
+        originX = r.x + 14;
+        originY = r.y + 420;
+        cols = 2;
+        gap = 8;
+        w = (r.w - 36) / 2;
+        h = 43;
+        this.text("技能释放顺序", originX, originY - 22, 13, "#f0e6d1", "left", 800);
+        this.text(this.game.swapPick !== null ? "再点一项完成交换" : "暂停时点击两项交换", r.x + r.w - 14, originY - 22, 10, this.game.swapPick !== null ? "#d9bd77" : "#8f9b96", "right", 650);
+      } else {
+        const pad = 7;
+        cols = Math.max(1, unit.skillBar.length);
+        gap = 4;
+        w = Math.min(48, (CONFIG.WIDTH - pad * 2 - gap * (cols - 1)) / cols);
+        h = 49;
+        originX = (CONFIG.WIDTH - (w * cols + gap * (cols - 1))) / 2;
+        originY = this.layout.quickY - 1;
+        this.ctx.fillStyle = "rgba(7,10,12,.90)";
+        this.ctx.fillRect(0, originY - 8, CONFIG.WIDTH, CONFIG.HEIGHT - originY + 8);
+      }
+      unit.skillBar.forEach((skill, i) => {
+        const row = Math.floor(i / cols);
+        const col = i % cols;
+        const x = originX + col * (w + gap);
+        const y = originY + row * (h + gap);
+        const def = SKILL_DEFS[skill];
+        const selected = this.game.swapPick && this.game.swapPick.unitId === unit.id && this.game.swapPick.index === i;
+        this.game.hitRegions.push({ type: "skill", id: "skill" + i, index: i, unitId: unit.id, x: x, y: y, w: w, h: h });
+        this.ctx.fillStyle = selected ? def.color : "rgba(18,23,24,.92)";
+        roundRect(this.ctx, x, y, w, h, this.layout.desktop ? 9 : 12);
+        this.ctx.fill();
+        this.ctx.strokeStyle = selected ? "#fff5d4" : def.color;
+        this.ctx.lineWidth = selected ? 2.5 : 1.5;
+        this.ctx.stroke();
+        this.ctx.fillStyle = def.color;
+        this.ctx.beginPath();
+        this.ctx.arc(x + (this.layout.desktop ? 18 : w / 2), y + (this.layout.desktop ? h / 2 : 15), this.layout.desktop ? 9 : 10, 0, Math.PI * 2);
+        this.ctx.fill();
+        const left = unit.cooldownLeft(skill);
+        if (this.layout.desktop) {
+          this.text((i + 1) + "  " + def.name, x + 34, y + h / 2 - 6, 11, selected ? "#fff" : "#eee5d2", "left", 750);
+          this.text(left > 0 ? "冷却 " + left + " 回合" : def.cooldownTurns ? "已就绪 · CD " + def.cooldownTurns + " 回合" : "已就绪 · 无冷却", x + 34, y + h / 2 + 10, 9, selected ? "#fff" : left > 0 ? "#87918d" : "#66bd9d", "left", 650);
+        } else {
+          this.text(String(i + 1), x + 7, y + 7, 7, "#b8c1bc", "center", 750);
+          this.text(def.short, x + w / 2, y + 15, 10, "#fff", "center", 800);
+          this.text(left > 0 ? left + "回合" : def.name, x + w / 2, y + 36, 7.5, left > 0 ? "#abb3af" : "#e8ddc8", "center", 700);
+        }
+      });
+    }
+    drawLogs() {
+      const colors = {
+        ally: "#57caa9", enemy: "#ef7c84", skill: "#7ea7ea", draw: "#aa91df",
+        merge: "#e1b353", ai: "#62aaa5", cooldown: "#9aa3a0", warn: "#ed8b63",
+        victory: "#5ed091", muted: "#99a5a0", damage: "#ef777b", heal: "#70d28b"
+      };
+      if (this.layout.desktop) {
+        const r = this.layout.right;
+        this.panel(r.x, r.y, r.w, r.h, 18, "rgba(12,16,17,.88)");
+        this.text("战场观察", r.x + 18, r.y + 28, 20, "#f1e7d1", "left", 800);
+        this.text("虚拟时间 " + this.game.battle.time.toFixed(2) + "s", r.x + r.w - 18, r.y + 30, 11, "#91a099", "right", 650);
+        const logTop = r.y + 382;
+        this.ctx.strokeStyle = "rgba(194,168,112,.28)";
+        this.ctx.beginPath();
+        this.ctx.moveTo(r.x + 16, logTop - 16);
+        this.ctx.lineTo(r.x + r.w - 16, logTop - 16);
+        this.ctx.stroke();
+        this.text("战斗记录", r.x + 18, logTop, 13, "#e8ddc6", "left", 800);
+        const capacity = Math.max(6, Math.floor((r.y + r.h - logTop - 54) / 28));
+        const logs = this.game.logs.slice(-capacity);
+        logs.forEach((log, i) => {
+          const y = logTop + 28 + i * 28;
+          this.ctx.fillStyle = colors[log.type] || CONFIG.COLORS.muted;
+          this.ctx.beginPath();
+          this.ctx.arc(r.x + 21, y, 3, 0, Math.PI * 2);
+          this.ctx.fill();
+          const maxChars = Math.max(16, Math.floor((r.w - 78) / 12));
+          const label = log.text.length > maxChars ? log.text.slice(0, maxChars - 1) + "…" : log.text;
+          this.text(label, r.x + 31, y, 11, "#c7d0ca", "left", 600);
+          this.text(log.time.toFixed(1), r.x + r.w - 17, y, 9, "#78847f", "right", 550);
+        });
+        if (!logs.length) this.text("点击左侧“开始”进入战斗", r.x + r.w / 2, logTop + 58, 12, "#7f8e87", "center", 650);
+        this.text("拖动战场探索完整四屏地图", r.x + r.w / 2, r.y + r.h - 24, 10, "#b79b62", "center", 650);
+        return;
+      }
+
+      if (this.game.debugOpen) {
+        const r = this.layout.drawer;
+        this.ctx.fillStyle = "rgba(0,0,0,.45)";
+        this.ctx.fillRect(0, 0, r.x, CONFIG.HEIGHT);
+        this.panel(r.x, 0, r.w, r.h, 0, "rgba(10,14,15,.97)");
+        this.text("调试与战斗记录", r.x + 18, 28, 17, "#f2e8d2", "left", 800);
+        this.button(r.x + r.w - 66, 10, 52, 36, "关闭", "toggleDebug", true, "#866e43");
+        this.button(r.x + 14, 55, (r.w - 36) / 2, 34, "同种子重开", "sameSeed", false);
+        this.button(r.x + 22 + (r.w - 36) / 2, 55, (r.w - 36) / 2, 34, "新种子重开", "newSeed", false);
+        this.button(r.x + 14, 96, r.w - 28, 34, "配队与技能背包", "teamEditor", false, "#7d6744");
+        this.text("种子 " + this.game.seed + " · 时间 " + this.game.battle.time.toFixed(2) + "s", r.x + 16, 278, 10, "#a5b0aa", "left", 650);
+        this.text("战斗记录", r.x + 16, 303, 13, "#e8ddc6", "left", 800);
+        const capacity = Math.max(5, Math.floor((CONFIG.HEIGHT - 350) / 25));
+        const logs = this.game.logs.slice(-capacity);
+        logs.forEach((log, i) => {
+          const y = 330 + i * 25;
+          this.ctx.fillStyle = colors[log.type] || CONFIG.COLORS.muted;
+          this.ctx.beginPath();
+          this.ctx.arc(r.x + 20, y, 2.5, 0, Math.PI * 2);
+          this.ctx.fill();
+          const label = log.text.length > 30 ? log.text.slice(0, 29) + "…" : log.text;
+          this.text(label, r.x + 29, y, 10, "#c7d0ca", "left", 600);
+          this.text(log.time.toFixed(1), r.x + r.w - 15, y, 8, "#76827d", "right", 550);
+        });
+      } else {
+        const logs = this.game.logs.slice(-2);
+        if (!logs.length) return;
+        const h = logs.length * 20 + 12;
+        const x = 12, y = this.layout.quickY - h - 17, w = CONFIG.WIDTH - 24;
+        this.panel(x, y, w, h, 12, "rgba(7,10,11,.74)");
+        logs.forEach((log, i) => {
+          this.ctx.fillStyle = colors[log.type] || CONFIG.COLORS.muted;
+          this.ctx.beginPath();
+          this.ctx.arc(x + 12, y + 12 + i * 20, 2.6, 0, Math.PI * 2);
+          this.ctx.fill();
+          const label = log.text.length > 34 ? log.text.slice(0, 33) + "…" : log.text;
+          this.text(label, x + 21, y + 12 + i * 20, 9, "#e0e4dc", "left", 600);
+        });
+      }
+    }
+    drawActionOverlay() {
+      const cue = this.actionCue;
+      if (!cue) return;
+      const ctx = this.ctx;
+      const f = this.layout.field;
+      const t = clamp(cue.progress || 0, 0, 1);
+      const drawFloatingCard = (card, x, y, w, h, rotation, alpha, extra) => {
+        ctx.save();
+        ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+        ctx.translate(x, y);
+        ctx.rotate(rotation || 0);
+        this.drawCard(card, -w / 2, -h / 2, w, h, !!extra, cue.actor, false, true);
+        ctx.restore();
+      };
+      if (cue.type === "actionStart") {
+        const alpha = Math.sin(t * Math.PI);
+        const enter = ease(clamp(t / .28, 0, 1));
+        const w = Math.min(f.w - 34, this.layout.desktop ? 360 : 270);
+        const h = this.layout.desktop ? 92 : 72;
+        const x = f.x + (f.w - w) / 2;
+        const y = f.y + f.h * .24 - h / 2;
+        const scale = .86 + enter * .14;
+        const drawW = w * scale;
+        const drawH = h * scale;
+        const drawX = x + (w - drawW) / 2;
+        const drawY = y + (h - drawH) / 2;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = "rgba(8,12,13,.92)";
+        roundRect(ctx, drawX, drawY, drawW, drawH, drawH / 2);
+        ctx.fill();
+        ctx.strokeStyle = cue.actor.color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        this.text(cue.actor.name + " · 开始行动", x + w / 2, y + h * .42, (this.layout.desktop ? 23 : 17) * scale, "#fff0d2", "center", 900);
+        this.text("行动力 " + cue.actionPoints + "  ·  手牌 " + cue.cardCount + " 张", x + w / 2, y + h * .70, (this.layout.desktop ? 12 : 10) * scale, "#9ed6bd", "center", 700);
+        ctx.restore();
+        return;
+      }
+      if (cue.type === "sortHand") {
+        const items = cue.items || [];
+        if (!items.length) return;
+        const centerX = f.x + f.w / 2;
+        const centerY = this.layout.handY + items[0].originRect.h * .44;
+        const gather = ease(clamp(t / .42, 0, 1));
+        const scatter = ease(clamp((t - .56) / .44, 0, 1));
+        items.forEach((item, i) => {
+          const from = item.originRect;
+          const to = item.targetRect;
+          const orderOffset = i - (items.length - 1) / 2;
+          const stackX = centerX + orderOffset * (this.layout.desktop ? 3.2 : 2.1);
+          const stackY = centerY + Math.abs(orderOffset) * (this.layout.desktop ? 1.5 : 1);
+          let x;
+          let y;
+          let rotation;
+          if (t < .42) {
+            x = lerp(from.x + from.w / 2, stackX, gather);
+            y = lerp(from.y + from.h / 2, stackY, gather) - Math.sin(gather * Math.PI) * (this.layout.desktop ? 28 : 18);
+            rotation = lerp(orderOffset * .025, orderOffset * .012, gather);
+          } else if (t < .56) {
+            x = stackX;
+            y = stackY;
+            rotation = orderOffset * .012;
+          } else {
+            x = lerp(stackX, to.x + to.w / 2, scatter);
+            y = lerp(stackY, to.y + to.h / 2, scatter) - Math.sin(scatter * Math.PI) * (this.layout.desktop ? 24 : 16);
+            rotation = lerp(orderOffset * .012, 0, scatter);
+          }
+          drawFloatingCard(item.card, x, y, to.w, to.h, rotation, 1, scatter > .5 ? item.toExtra : item.fromExtra);
+        });
+        ctx.save();
+        ctx.globalAlpha = Math.sin(t * Math.PI);
+        this.text("手牌整理", centerX, this.layout.handY - (this.layout.desktop ? 50 : 36), this.layout.desktop ? 16 : 11, "#f5df9d", "center", 850);
+        ctx.restore();
+        return;
+      }
+      const visualCard = cue.card || cue.merged;
+      if (!visualCard) return;
+      const def = SKILL_DEFS[visualCard.skill];
+      if (cue.type === "drawCard") {
+        const r = cue.targetRect;
+        const sx = f.x + f.w - (this.layout.desktop ? 28 : 18);
+        const sy = this.layout.handY - (this.layout.desktop ? 48 : 35);
+        const ex = r.x + r.w / 2;
+        const ey = r.y + r.h / 2;
+        const q = ease(t);
+        const x = lerp(sx, ex, q);
+        const y = lerp(sy, ey, q) - Math.sin(q * Math.PI) * (this.layout.desktop ? 74 : 48);
+        const scale = .62 + q * .38;
+        ctx.save();
+        ctx.strokeStyle = def.color;
+        ctx.globalAlpha = .7 * (1 - t);
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.quadraticCurveTo((sx + ex) / 2, Math.min(sy, ey) - 65, x, y);
+        ctx.stroke();
+        ctx.restore();
+        drawFloatingCard(cue.card, x, y, r.w * scale, r.h * scale, (1 - q) * .22, 1);
+        this.text("补充手牌 · " + def.name, f.x + f.w / 2, this.layout.handY - (this.layout.desktop ? 82 : 62), this.layout.desktop ? 14 : 10, "#f4e7ca", "center", 800);
+        return;
+      }
+      if (cue.type === "mergeCards") {
+        const origins = cue.originRects;
+        const target = cue.targetRect;
+        const cx = f.x + f.w / 2;
+        const cy = this.layout.handY - (this.layout.desktop ? 82 : 62);
+        const collide = ease(clamp(t / .48, 0, 1));
+        if (t < .56) {
+          origins.forEach((r, i) => {
+            const sx = r.x + r.w / 2;
+            const sy = r.y + r.h / 2;
+            const spread = (i ? 1 : -1) * (1 - collide) * (this.layout.desktop ? 12 : 8);
+            const x = lerp(sx, cx, collide) + spread;
+            const y = lerp(sy, cy, collide) - Math.sin(collide * Math.PI) * (this.layout.desktop ? 34 : 22);
+            const scale = 1 - collide * .16;
+            drawFloatingCard(cue.pair[i], x, y, r.w * scale, r.h * scale, (i ? 1 : -1) * (1 - collide) * .18, 1 - clamp((t - .48) / .08, 0, 1), cue.originExtra && cue.originExtra[i]);
+          });
+        }
+        const flash = 1 - clamp(Math.abs(t - .54) / .10, 0, 1);
+        if (flash > 0) {
+          ctx.save();
+          ctx.globalAlpha = flash;
+          ctx.fillStyle = "#fff3b1";
+          ctx.shadowColor = def.color;
+          ctx.shadowBlur = 32;
+          ctx.beginPath();
+          ctx.arc(cx, cy, (12 + flash * 25), 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+        if (t >= .52) {
+          const q = ease(clamp((t - .52) / .48, 0, 1));
+          const ex = target.x + target.w / 2;
+          const ey = target.y + target.h / 2;
+          const x = lerp(cx, ex, q);
+          const y = lerp(cy, ey, q) - Math.sin(q * Math.PI) * (this.layout.desktop ? 34 : 22);
+          const scale = .78 + q * .22;
+          drawFloatingCard(cue.merged, x, y, target.w * scale, target.h * scale, (1 - q) * -.12, clamp((t - .52) / .10, 0, 1), cue.targetExtra);
+        }
+        const shiftQ = ease(clamp((t - .60) / .40, 0, 1));
+        (cue.shiftCards || []).forEach((item, i) => {
+          const from = item.fromRect;
+          const to = item.toRect;
+          const x = lerp(from.x + from.w / 2, to.x + to.w / 2, shiftQ);
+          const y = lerp(from.y + from.h / 2, to.y + to.h / 2, shiftQ) - Math.sin(shiftQ * Math.PI) * (this.layout.desktop ? 12 : 8);
+          drawFloatingCard(item.card, x, y, to.w, to.h, (1 - shiftQ) * (i % 2 ? .025 : -.025), 1, shiftQ > .5 ? item.toExtra : item.fromExtra);
+        });
+        const bannerAlpha = Math.sin(t * Math.PI);
+        ctx.save();
+        ctx.globalAlpha = bannerAlpha;
+        this.text(def.name + "  ★" + cue.pair[0].star + " + ★" + cue.pair[1].star + "  →  " + "★".repeat(cue.merged.star), cx, cy - (this.layout.desktop ? 72 : 53), this.layout.desktop ? 16 : 11, "#ffe29a", "center", 850);
+        ctx.restore();
+        return;
+      }
+      if (cue.type === "cardFly") {
+        const r = cue.originRect || this.getCardRect(cue.card.id);
+        const aim = this.game.map.worldToScreen(cue.aimCell.x, cue.aimCell.y);
+        const sx = r.x + r.w / 2;
+        const sy = r.y + r.h / 2;
+        const ex = clamp(aim.x, f.x + 16, f.x + f.w - 16);
+        const ey = clamp(aim.y, f.y + 18, f.y + f.h - 18);
+        const q = ease(t);
+        const cx = (sx + ex) / 2;
+        const cy = Math.min(sy, ey) - (this.layout.desktop ? 105 : 68);
+        const inv = 1 - q;
+        const x = inv * inv * sx + 2 * inv * q * cx + q * q * ex;
+        const y = inv * inv * sy + 2 * inv * q * cy + q * q * ey;
+        const scale = 1 - q * .72;
+        ctx.save();
+        ctx.globalAlpha = 1 - clamp((t - .88) / .12, 0, 1);
+        ctx.strokeStyle = def.color;
+        ctx.shadowColor = def.color;
+        ctx.shadowBlur = 16;
+        ctx.lineWidth = this.layout.desktop ? 5 : 3;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(lerp(sx, x, .72), lerp(sy, y, .72));
+        ctx.lineTo(x, y);
+        ctx.stroke();
+        ctx.translate(x, y);
+        ctx.rotate((q - .5) * .26);
+        this.drawCard(cue.card, -r.w * scale / 2, -r.h * scale / 2, r.w * scale, r.h * scale, cue.card.inExtra, cue.actor);
+        ctx.restore();
+        return;
+      }
+      if (cue.type === "skillTitle") {
+        const alpha = Math.sin(t * Math.PI);
+        const w = Math.min(f.w - 44, this.layout.desktop ? 390 : 280);
+        const h = this.layout.desktop ? 76 : 62;
+        const x = f.x + (f.w - w) / 2;
+        const y = f.y + (this.layout.desktop ? 92 : 68);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.shadowColor = def.color;
+        ctx.shadowBlur = 22;
+        ctx.fillStyle = "rgba(7,10,11,.92)";
+        roundRect(ctx, x, y, w, h, h / 2);
+        ctx.fill();
+        ctx.shadowColor = "transparent";
+        ctx.strokeStyle = def.color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        this.text(cue.actor.name + "  ·  " + def.name, x + w / 2, y + h * .42, this.layout.desktop ? 21 : 16, "#fff2d8", "center", 850);
+        this.text("★".repeat(cue.card.star) + "   技能释放", x + w / 2, y + h * .72, this.layout.desktop ? 11 : 9, "#f1c15e", "center", 750);
+        ctx.restore();
+        return;
+      }
+      if (cue.type === "skip") {
+        const alpha = Math.sin(t * Math.PI);
+        const w = this.layout.desktop ? 260 : 210;
+        const x = f.x + (f.w - w) / 2;
+        const y = this.layout.handY - 38;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = "rgba(8,11,12,.88)";
+        roundRect(ctx, x, y, w, 38, 19);
+        ctx.fill();
+        ctx.strokeStyle = "#9b9484";
+        ctx.stroke();
+        this.text(def.name + " · " + cue.reason, x + w / 2, y + 19, this.layout.desktop ? 12 : 10, "#d5d0c4", "center", 700);
+        ctx.restore();
+      }
+    }
+    drawMergeOverlay() {
+      const effects = this.effects.filter(e => e.type === "merge");
+      if (!effects.length) return;
+      const e = effects[effects.length - 1];
+      const t = clamp(e.age / e.duration, 0, 1);
+      const d = e.data;
+      const ctx = this.ctx;
+      const cx = this.layout.field.x + this.layout.field.w / 2;
+      const cy = this.layout.handY + (this.layout.desktop ? 38 : 28);
+      ctx.save();
+      ctx.globalAlpha = Math.sin(t * Math.PI);
+      const scale = .72 + Math.sin(t * Math.PI) * .55;
+      ctx.translate(cx, cy);
+      ctx.scale(scale, scale);
+      ctx.shadowColor = d.color;
+      ctx.shadowBlur = 20;
+      ctx.fillStyle = "rgba(10,14,15,.96)";
+      roundRect(ctx, -42, -30, 84, 60, 14);
+      ctx.fill();
+      ctx.strokeStyle = d.color;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      this.text(SKILL_DEFS[d.skill].name, 0, -7, 14, "#fff0d1", "center", 800);
+      this.text("★".repeat(d.star) + " 合成", 0, 13, 10, "#edbd50", "center", 750);
+      ctx.restore();
+    }
+    drawEditorOverlay() {
+      if (!this.game.editorOpen || !this.game.editorDraft) return;
+      const ctx = this.ctx;
+      const desktop = this.layout.desktop;
+      this.game.hitRegions.push({ type: "button", id: "editorBlocker", x: 0, y: 0, w: CONFIG.WIDTH, h: CONFIG.HEIGHT });
+      ctx.save();
+      ctx.fillStyle = "rgba(4,7,8,.78)";
+      ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+      ctx.restore();
+
+      const w = desktop ? Math.min(960, CONFIG.WIDTH - 92) : CONFIG.WIDTH - 16;
+      const h = desktop ? Math.min(700, CONFIG.HEIGHT - 72) : CONFIG.HEIGHT - 16;
+      const x = (CONFIG.WIDTH - w) / 2;
+      const y = (CONFIG.HEIGHT - h) / 2;
+      this.panel(x, y, w, h, desktop ? 22 : 14, "rgba(11,16,17,.985)");
+      this.text("配队与技能背包", x + 22, y + (desktop ? 34 : 27), desktop ? 24 : 18, "#f4ead2", "left", 850);
+      const activeCount = CONFIG.ALLIES.filter(data => this.game.editorDraft.lineup[data.id]).length;
+      this.text(
+        activeCount + " 人上场 · 保存后以当前种子重新开始",
+        x + w - 22, y + (desktop ? 35 : 28), desktop ? 12 : 9, "#83c9ae", "right", 700
+      );
+
+      const selectedId = this.game.editorSelectedAllyId;
+      const selectedData = CONFIG.ALLIES.find(data => data.id === selectedId) || CONFIG.ALLIES[0];
+      const equipped = (this.game.editorDraft.skills[selectedData.id] || []).slice();
+      const limit = Math.min(5, Math.floor(equipped.length / 2) + 1);
+      const drawRosterCard = (data, rx, ry, rw, rh) => {
+        const selected = data.id === selectedData.id;
+        const active = !!this.game.editorDraft.lineup[data.id];
+        this.game.hitRegions.push({ type: "button", id: "editorSelect:" + data.id, x: rx, y: ry, w: rw, h: rh });
+        ctx.fillStyle = selected ? data.color + "42" : "rgba(26,32,32,.94)";
+        roundRect(ctx, rx, ry, rw, rh, 11);
+        ctx.fill();
+        ctx.strokeStyle = selected ? data.color : active ? "rgba(218,192,132,.55)" : "rgba(113,124,120,.30)";
+        ctx.lineWidth = selected ? 2.2 : 1;
+        ctx.stroke();
+        ctx.fillStyle = data.color;
+        ctx.beginPath();
+        ctx.arc(rx + 24, ry + rh / 2, desktop ? 17 : 15, 0, Math.PI * 2);
+        ctx.fill();
+        this.text(data.short, rx + 24, ry + rh / 2, desktop ? 12 : 10, "#fff", "center", 850);
+        this.text(data.name, rx + 48, ry + rh / 2 - 8, desktop ? 14 : 11, "#f6ead4", "left", 800);
+        this.text(active ? "出战队员" : "候补角色", rx + 48, ry + rh / 2 + 10, desktop ? 10 : 8, active ? "#70c9a7" : "#87918d", "left", 650);
+        const toggleW = desktop ? 66 : 52;
+        const toggleH = Math.min(44, rh - 6);
+        this.button(rx + rw - toggleW - 8, ry + (rh - toggleH) / 2, toggleW, toggleH, active ? "下场" : "上场", "editorLineup:" + data.id, active, active ? "#497d6c" : "#6f5a3a");
+      };
+      const drawSkillCard = (skill, sx, sy, sw, sh) => {
+        const def = SKILL_DEFS[skill];
+        const order = equipped.indexOf(skill);
+        const active = order >= 0;
+        this.game.hitRegions.push({ type: "button", id: "editorSkill:" + skill, x: sx, y: sy, w: sw, h: sh });
+        ctx.fillStyle = active ? def.color + "32" : "rgba(24,30,31,.94)";
+        roundRect(ctx, sx, sy, sw, sh, 11);
+        ctx.fill();
+        ctx.strokeStyle = active ? def.color : "rgba(152,161,153,.28)";
+        ctx.lineWidth = active ? 2 : 1;
+        ctx.stroke();
+        ctx.fillStyle = def.color;
+        ctx.beginPath();
+        ctx.arc(sx + (desktop ? 27 : 22), sy + sh / 2, desktop ? 16 : 14, 0, Math.PI * 2);
+        ctx.fill();
+        this.text(def.short, sx + (desktop ? 27 : 22), sy + sh / 2, desktop ? 12 : 10, "#fff", "center", 850);
+        const tx = sx + (desktop ? 52 : 43);
+        this.text(def.name, tx, sy + sh / 2 - (desktop ? 11 : 9), desktop ? 14 : 11, active ? "#fff1da" : "#d3d8d1", "left", 800);
+        const cdText = def.cooldownTurns === 0 ? "无冷却 · 每回合可用" : "冷却 " + def.cooldownTurns + " 个自身回合";
+        this.text(cdText, tx, sy + sh / 2 + (desktop ? 11 : 9), desktop ? 10 : 8, def.cooldownTurns === 2 ? "#e6ab71" : def.cooldownTurns === 1 ? "#9fb9b0" : "#71caa7", "left", 650);
+        if (active) {
+          ctx.fillStyle = def.color;
+          ctx.beginPath();
+          ctx.arc(sx + sw - 17, sy + 17, 12, 0, Math.PI * 2);
+          ctx.fill();
+          this.text(String(order + 1), sx + sw - 17, sy + 17, 9, "#fff", "center", 850);
+        }
+      };
+
+      const footerY = y + h - (desktop ? 64 : 52);
+      if (desktop) {
+        const contentTop = y + 76;
+        const leftX = x + 22;
+        const leftW = 260;
+        const rightX = leftX + leftW + 24;
+        const rightW = x + w - 22 - rightX;
+        this.text("出战角色 · 可选择 1–4 人", leftX, contentTop, 13, "#d9c69b", "left", 800);
+        const rosterStart = contentTop + 24;
+        const rosterH = Math.min(68, (footerY - rosterStart - 92) / 4 - 7);
+        CONFIG.ALLIES.forEach((data, i) => drawRosterCard(data, leftX, rosterStart + i * (rosterH + 7), leftW, rosterH));
+        const statsY = rosterStart + 4 * (rosterH + 7) + 12;
+        this.panel(leftX, statsY, leftW, 68, 10, "rgba(24,30,29,.76)");
+        this.text(selectedData.name + " · 已装配 " + equipped.length + "/8", leftX + 13, statsY + 20, 12, "#f1e5ce", "left", 750);
+        this.text("普通手牌上限 " + limit + " · 初始行动力 " + CONFIG.ACTION_POINTS, leftX + 13, statsY + 43, 10, "#7fc5aa", "left", 700);
+        this.text("技能背包 · 点击装配/卸下（数字为释放顺序）", rightX, contentTop, 13, "#d9c69b", "left", 800);
+        const cols = 2, gap = 10;
+        const skillW = (rightW - gap) / cols;
+        const skillStart = contentTop + 24;
+        const skillH = Math.min(83, (footerY - skillStart - 14 - gap * 3) / 4);
+        SKILL_KEYS.forEach((skill, i) => {
+          const col = i % cols;
+          const row = Math.floor(i / cols);
+          drawSkillCard(skill, rightX + col * (skillW + gap), skillStart + row * (skillH + gap), skillW, skillH);
+        });
+      } else {
+        const rosterStart = y + 58;
+        const gap = 7;
+        const rosterW = (w - 30 - gap) / 2;
+        const rosterH = 50;
+        CONFIG.ALLIES.forEach((data, i) => {
+          const col = i % 2;
+          const row = Math.floor(i / 2);
+          drawRosterCard(data, x + 15 + col * (rosterW + gap), rosterStart + row * (rosterH + gap), rosterW, rosterH);
+        });
+        const skillTitleY = rosterStart + rosterH * 2 + gap + 18;
+        this.text(selectedData.name + " · 技能 " + equipped.length + "/8 · 手牌上限 " + limit, x + 16, skillTitleY, 11, "#e9d9b6", "left", 800);
+        this.text("点击技能装卸", x + w - 16, skillTitleY, 9, "#81bea7", "right", 700);
+        const skillStart = skillTitleY + 17;
+        const skillW = (w - 30 - gap) / 2;
+        const available = footerY - skillStart - 31;
+        const skillH = clamp((available - gap * 3) / 4, 43, 61);
+        SKILL_KEYS.forEach((skill, i) => {
+          const col = i % 2;
+          const row = Math.floor(i / 2);
+          drawSkillCard(skill, x + 15 + col * (skillW + gap), skillStart + row * (skillH + gap), skillW, skillH);
+        });
+      }
+
+      this.text(this.game.editorMessage, x + 18, footerY - 13, desktop ? 10 : 8, "#a9b6b0", "left", 650);
+      const closeW = desktop ? 112 : 88;
+      const applyW = desktop ? 224 : 132;
+      const buttonY = footerY + (desktop ? 10 : 5);
+      const buttonH = 44;
+      this.button(x + w - 18 - applyW, buttonY, applyW, buttonH, desktop ? "保存并同种子重开" : "保存并重开", "editorApply", true, "#438e76");
+      this.button(x + w - 27 - applyW - closeW, buttonY, closeW, buttonH, "取消", "editorClose", false, "#6c5b43");
+    }
+    drawResult() {
+      const b = this.game.battle;
+      if (!b.gameOver && (b.running || b.stepping || b.currentActor)) return;
+      const ctx = this.ctx;
+      ctx.save();
+      const cx = CONFIG.FIELD_X + CONFIG.FIELD_W / 2;
+      const boxW = Math.min(CONFIG.FIELD_W - 40, this.layout.desktop ? 420 : 290);
+      const boxH = this.layout.desktop ? 126 : 102;
+      const boxX = cx - boxW / 2;
+      const boxY = CONFIG.FIELD_Y + CONFIG.FIELD_H * .38;
+      ctx.fillStyle = b.gameOver ? "rgba(28,54,50,.58)" : "rgba(12,16,17,.68)";
+      roundRect(ctx, boxX - 8, boxY - 8, boxW + 16, boxH + 16, 22);
+      ctx.fill();
+      ctx.fillStyle = "rgba(12,16,17,.94)";
+      roundRect(ctx, boxX, boxY, boxW, boxH, 18);
+      ctx.fill();
+      ctx.strokeStyle = b.gameOver ? "#67b89d" : "rgba(213,181,111,.70)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      const title = b.gameOver ? b.result : "风芽远征";
+      const sub = b.gameOver ? "可用相同种子再次验证结果" : CONFIG.MAP_COLS + "×" + CONFIG.MAP_ROWS + " 四屏遗迹 · 7×13 视野";
+      this.text(title, cx, boxY + boxH * .34, this.layout.desktop ? 28 : 21, b.gameOver && b.result === "战斗失败" ? "#ef7d82" : "#68c6a7", "center", 850);
+      this.text(sub, cx, boxY + boxH * .61, this.layout.desktop ? 13 : 10, "#c5c8bd", "center", 650);
+      if (!b.gameOver) this.text(this.layout.desktop ? "从左侧控制台点击“开始”" : "点击顶部“开始”", cx, boxY + boxH * .81, this.layout.desktop ? 11 : 9, "#d2b66f", "center", 700);
+      ctx.restore();
+    }
+    render() {
+      this.game.hitRegions.length = 0;
+      if (typeof this.ctx.reset === "function") this.ctx.reset();
+      this.ctx.setTransform(this.pixelScale, 0, 0, this.pixelScale, 0, 0);
+      this.ctx.globalAlpha = 1;
+      this.ctx.globalCompositeOperation = "source-over";
+      this.ctx.setLineDash([]);
+      this.ctx.shadowColor = "transparent";
+      this.ctx.shadowBlur = 0;
+      this.ctx.shadowOffsetX = 0;
+      this.ctx.shadowOffsetY = 0;
+      this.ctx.filter = "none";
+      this.ctx.imageSmoothingEnabled = true;
+      this.ctx.clearRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+      this.drawBackground();
+      this.drawBattlefield();
+      this.drawTimeline();
+      this.drawControls();
+      if (this.layout.desktop) {
+        this.drawLogs();
+        this.drawSideInfo();
+        this.drawMinimap();
+      }
+      this.drawHand();
+      this.drawSkills();
+      this.drawMergeOverlay();
+      this.drawActionOverlay();
+      this.drawResult();
+      if (!this.layout.desktop) {
+        this.drawLogs();
+        if (this.game.debugOpen) {
+          this.drawSideInfo();
+          this.drawMinimap();
+        }
+      }
+      this.drawEditorOverlay();
+    }
+  }
+
+  class InputController {
+    constructor(game, canvas) {
+      this.game = game;
+      this.canvas = canvas;
+      this.down = null;
+      this.dragging = false;
+      canvas.addEventListener("pointerdown", e => this.onDown(e));
+      canvas.addEventListener("pointermove", e => this.onMove(e));
+      canvas.addEventListener("pointerup", e => this.onUp(e));
+      canvas.addEventListener("pointercancel", e => this.onCancel(e));
+      canvas.addEventListener("contextmenu", e => e.preventDefault());
+      window.addEventListener("keydown", e => {
+        if (this.game.editorOpen) {
+          if (e.key === "Escape") this.game.closeTeamEditor();
+          e.preventDefault();
+          return;
+        }
+        if (e.code === "Space") {
+          e.preventDefault();
+          this.game.battle.running ? this.game.battle.pause() : this.game.battle.start();
+        }
+        if (e.key.toLowerCase() === "n") this.game.battle.stepOnce();
+      });
+    }
+    point(e) {
+      const rect = this.canvas.getBoundingClientRect();
+      return {
+        x: (e.clientX - rect.left) * CONFIG.WIDTH / rect.width,
+        y: (e.clientY - rect.top) * CONFIG.HEIGHT / rect.height
+      };
+    }
+    regionAt(p) {
+      for (let i = this.game.hitRegions.length - 1; i >= 0; i--) {
+        const r = this.game.hitRegions[i];
+        if (p.x >= r.x && p.y >= r.y && p.x <= r.x + r.w && p.y <= r.y + r.h) return r;
+      }
+      const nearby = this.game.hitRegions.filter(r => {
+        if (r.type !== "button" && r.type !== "skill") return false;
+        const padX = r.type === "button" ? 4 : 2;
+        const padY = 7;
+        return p.x >= r.x - padX && p.y >= r.y - padY &&
+          p.x <= r.x + r.w + padX && p.y <= r.y + r.h + padY;
+      }).sort((a, b) => {
+        const ad = Math.pow(p.x - (a.x + a.w / 2), 2) + Math.pow(p.y - (a.y + a.h / 2), 2);
+        const bd = Math.pow(p.x - (b.x + b.w / 2), 2) + Math.pow(p.y - (b.y + b.h / 2), 2);
+        return ad - bd;
+      });
+      if (nearby.length) return nearby[0];
+      return null;
+    }
+    onDown(e) {
+      const p = this.point(e);
+      const region = this.regionAt(p);
+      this.down = { p: p, last: p, region: region, pointerId: e.pointerId };
+      this.dragging = false;
+      try { this.canvas.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+    onMove(e) {
+      if (!this.down || this.down.pointerId !== e.pointerId) return;
+      const p = this.point(e);
+      const dxTotal = p.x - this.down.p.x;
+      const dyTotal = p.y - this.down.p.y;
+      if (this.down.region && this.down.region.type === "field" && Math.hypot(dxTotal, dyTotal) > 6) {
+        this.dragging = true;
+      }
+      if (this.dragging) {
+        const dx = p.x - this.down.last.x;
+        const dy = p.y - this.down.last.y;
+        this.game.map.panBy(-dx / CONFIG.CELL, -dy / CONFIG.CELL);
+      }
+      this.down.last = p;
+    }
+    onUp(e) {
+      if (!this.down || this.down.pointerId !== e.pointerId) return;
+      const p = this.point(e);
+      const region = this.regionAt(p);
+      if (!this.dragging && this.down.region && region && this.down.region.type === region.type && this.down.region.id === region.id) {
+        this.activate(region, p);
+      }
+      this.onCancel(e);
+    }
+    onCancel(e) {
+      if (this.down) {
+        try { this.canvas.releasePointerCapture(this.down.pointerId); } catch (_) {}
+      }
+      this.down = null;
+      this.dragging = false;
+    }
+    activate(region, p) {
+      if (region.type === "button") this.game.handleButton(region.id);
+      if (region.type === "skill") this.game.handleSkillSlot(region.unitId, region.index);
+      if (region.type === "field") {
+        const w = this.game.map.screenToWorld(p.x, p.y);
+        const unit = this.game.map.unitAt(w.x, w.y, null);
+        if (unit && unit.team === "ally") {
+          this.game.selectedAllyId = unit.id;
+          this.game.swapPick = null;
+          this.game.log("查看 " + unit.name + " 的技能顺序", "muted");
+        }
+      }
+      if (region.type === "minimap") {
+        const wx = (p.x - region.x) / region.w * CONFIG.MAP_COLS;
+        const wy = (p.y - region.y) / region.h * CONFIG.MAP_ROWS;
+        this.game.map.centerCameraAt(wx, wy);
+      }
+    }
+  }
+
+  class Game {
+    constructor(canvas) {
+      this.canvas = canvas;
+      this.seed = 20260715;
+      this.skillOrders = deepCopy(INITIAL_SKILL_ORDERS);
+      this.lineup = {};
+      CONFIG.ALLIES.forEach(data => this.lineup[data.id] = true);
+      this.logs = [];
+      this.hitRegions = [];
+      this.selectedAllyId = "a1";
+      this.lastAllyActor = null;
+      this.swapPick = null;
+      this.debugOpen = false;
+      this.editorOpen = false;
+      this.editorDraft = null;
+      this.editorSelectedAllyId = "a1";
+      this.editorMessage = "";
+      this.lastFrame = performance.now();
+      this.reset(this.seed);
+      this.input = new InputController(this, canvas);
+      requestAnimationFrame(t => this.loop(t));
+    }
+    reset(seed) {
+      this.seed = (Number(seed) >>> 0) || 1;
+      CARD_SEQUENCE = 1;
+      this.rng = new SeededRandom(this.seed);
+      this.logs = [];
+      this.units = [];
+      CONFIG.ALLIES.filter(data => this.lineup[data.id]).forEach(data => {
+        this.units.push(new Unit(data, "ally", this.skillOrders[data.id] || []));
+      });
+      CONFIG.ENEMIES.forEach(data => this.units.push(new Unit(data, "enemy", [])));
+      this.map = new GridMap(this);
+      this.hand = new HandManager(this);
+      this.skills = new SkillSystem(this);
+      this.ai = new BattleAI(this);
+      this.battle = new BattleManager(this);
+      this.renderer = this.renderer || new Renderer(this, this.canvas);
+      this.renderer.game = this;
+      this.renderer.effects = [];
+      this.renderer.actionCue = null;
+      this.renderer.cardRects.clear();
+      this.map.focusOn(7, 11.5, true);
+      if (!this.units.some(u => u.team === "ally" && u.id === this.selectedAllyId)) {
+        const firstAlly = this.units.find(u => u.team === "ally");
+        this.selectedAllyId = firstAlly ? firstAlly.id : "a1";
+      }
+      this.lastAllyActor = this.getSelectedAlly();
+      this.swapPick = null;
+      this.log("四屏原野已生成，种子 " + this.seed, "ai");
+      this.log("可拖动战场或点击右侧小地图查看", "muted");
+    }
+    getSelectedAlly() {
+      let unit = this.units.find(u => u.id === this.selectedAllyId && u.team === "ally");
+      if (!unit) unit = this.units.find(u => u.team === "ally");
+      return unit || null;
+    }
+    log(text, type) {
+      this.logs.push({ time: this.battle ? this.battle.time : 0, text: text, type: type || "muted" });
+      if (this.logs.length > 120) this.logs.splice(0, this.logs.length - 120);
+    }
+    applyDamage(source, target, amount, label) {
+      if (!target || !target.alive) return 0;
+      let real = amount;
+      if (target.vulnerableUntil > this.battle.time) real *= 1 + CONFIG.VULNERABLE_BONUS;
+      real = Math.round(real);
+      const absorbed = Math.min(target.shield, real);
+      target.shield -= absorbed;
+      const hpDamage = real - absorbed;
+      target.hp = Math.max(0, target.hp - hpDamage);
+      this.renderer.addFloat(target.x, target.y, "-" + real, "#e45f6d");
+      this.log(target.name + " 受到 " + real + " 点" + label + "伤害", "damage");
+      if (target.hp <= 0) {
+        target.alive = false;
+        target.deathFade = 1;
+        target.hand = [];
+        target.extraCard = null;
+        this.log(target.name + " 被击败", "warn");
+      }
+      return real;
+    }
+    applyHeal(source, target, amount, label) {
+      if (!target || !target.alive) return 0;
+      const actual = Math.min(amount, target.maxHp - target.hp);
+      target.hp += actual;
+      this.renderer.addFloat(target.x, target.y, "+" + actual, "#4fbf79");
+      this.log(target.name + " 恢复 " + actual + " 点生命", "heal");
+      return actual;
+    }
+    openTeamEditor() {
+      this.battle.pause();
+      this.debugOpen = false;
+      this.editorOpen = true;
+      this.editorSelectedAllyId = this.selectedAllyId || CONFIG.ALLIES[0].id;
+      this.editorDraft = {
+        lineup: Object.assign({}, this.lineup),
+        skills: deepCopy(this.skillOrders)
+      };
+      this.editorMessage = "点击角色切换编辑对象；点击技能即可装配或卸下。";
+    }
+    closeTeamEditor() {
+      this.editorOpen = false;
+      this.editorDraft = null;
+      this.editorMessage = "";
+    }
+    toggleEditorLineup(unitId) {
+      if (!this.editorDraft || !(unitId in this.editorDraft.lineup)) return;
+      const activeCount = CONFIG.ALLIES.filter(data => this.editorDraft.lineup[data.id]).length;
+      if (this.editorDraft.lineup[unitId] && activeCount <= 1) {
+        this.editorMessage = "至少需要 1 名角色上场。";
+        return;
+      }
+      this.editorDraft.lineup[unitId] = !this.editorDraft.lineup[unitId];
+      this.editorSelectedAllyId = unitId;
+      this.editorMessage = this.editorDraft.lineup[unitId] ? "已加入出战队伍。" : "已设为候补。";
+    }
+    toggleEditorSkill(skill) {
+      if (!this.editorDraft || !SKILL_DEFS[skill]) return;
+      const unitId = this.editorSelectedAllyId;
+      const current = (this.editorDraft.skills[unitId] || []).slice();
+      const index = current.indexOf(skill);
+      if (index >= 0) {
+        current.splice(index, 1);
+        this.editorMessage = "已卸下「" + SKILL_DEFS[skill].name + "」。角色可以不带满 8 个技能。";
+      } else {
+        current.push(skill);
+        this.editorMessage = "已装配「" + SKILL_DEFS[skill].name + "」，位于释放顺序第 " + current.length + " 位。";
+      }
+      this.editorDraft.skills[unitId] = current;
+    }
+    applyTeamEditor() {
+      if (!this.editorDraft) return;
+      const active = CONFIG.ALLIES.filter(data => this.editorDraft.lineup[data.id]);
+      if (!active.length) {
+        this.editorMessage = "至少需要 1 名角色上场。";
+        return;
+      }
+      this.lineup = Object.assign({}, this.editorDraft.lineup);
+      CONFIG.ALLIES.forEach(data => {
+        const unique = [];
+        (this.editorDraft.skills[data.id] || []).forEach(skill => {
+          if (SKILL_DEFS[skill] && !unique.includes(skill)) unique.push(skill);
+        });
+        this.skillOrders[data.id] = unique.slice(0, SKILL_KEYS.length);
+      });
+      this.editorOpen = false;
+      this.editorDraft = null;
+      this.reset(this.seed);
+      this.log("配队与技能背包已应用 · " + active.length + " 人上场", "ally");
+    }
+    handleButton(id) {
+      if (id === "teamEditor") return this.openTeamEditor();
+      if (id === "editorClose") return this.closeTeamEditor();
+      if (id === "editorApply") return this.applyTeamEditor();
+      if (id.startsWith("editorSelect:")) {
+        this.editorSelectedAllyId = id.split(":")[1];
+        this.editorMessage = "正在编辑该角色的技能背包。";
+        return;
+      }
+      if (id.startsWith("editorLineup:")) return this.toggleEditorLineup(id.split(":")[1]);
+      if (id.startsWith("editorSkill:")) return this.toggleEditorSkill(id.split(":")[1]);
+      if (id === "editorBlocker") return;
+      if (id === "start") this.battle.start();
+      if (id === "pause") this.battle.pause();
+      if (id === "step") this.battle.stepOnce();
+      if (id === "speed1") this.battle.speed = 1;
+      if (id === "speed2") this.battle.speed = 2;
+      if (id === "speed4") this.battle.speed = 4;
+      if (id === "sameSeed") this.reset(this.seed);
+      if (id === "newSeed") this.reset((Date.now() ^ Math.floor(performance.now() * 1000)) >>> 0);
+      if (id === "toggleDebug") this.debugOpen = !this.debugOpen;
+    }
+    handleSkillSlot(unitId, index) {
+      if (this.battle.running || this.battle.stepping || this.battle.currentActor || this.battle.currentStep) {
+        this.log("请先暂停，再调整技能顺序", "warn");
+        return;
+      }
+      const unit = this.units.find(u => u.id === unitId && u.team === "ally");
+      if (!unit) return;
+      if (!this.swapPick || this.swapPick.unitId !== unitId) {
+        this.swapPick = { unitId: unitId, index: index };
+        return;
+      }
+      const first = this.swapPick.index;
+      if (first !== index) {
+        const tmp = unit.skillBar[first];
+        unit.skillBar[first] = unit.skillBar[index];
+        unit.skillBar[index] = tmp;
+        this.skillOrders[unit.id] = unit.skillBar.slice();
+        this.log(unit.name + " 交换技能位 " + (first + 1) + " 与 " + (index + 1), "ai");
+      }
+      this.swapPick = null;
+    }
+    assertState() {
+      const occupied = new Set();
+      this.units.filter(u => u.alive).forEach(u => {
+        const k = keyOf(u.x, u.y);
+        if (!this.map.inBounds(u.x, u.y) || this.map.isObstacle(u.x, u.y)) {
+          console.error("[断言] 单位处于非法格", u);
+        }
+        if (occupied.has(k)) console.error("[断言] 单位重叠", k);
+        occupied.add(k);
+        if (u.team === "ally") {
+          if (u.hand.length > this.hand.handLimit(u)) console.error("[断言] 普通手牌超过动态上限", u);
+          if (u.extraCard && u.hand.includes(u.extraCard)) console.error("[断言] 冷却槽重复引用", u);
+          if (u.actionPoints < 0 || u.actionPoints > u.maxActionPoints) console.error("[断言] 行动力越界", u);
+          SKILL_KEYS.forEach(skill => {
+            if (!Number.isInteger(u.cooldowns[skill]) || u.cooldowns[skill] < 0) console.error("[断言] 回合冷却非法", u, skill);
+          });
+        }
+      });
+    }
+    loop(now) {
+      const dt = Math.min(50, Math.max(0, now - this.lastFrame));
+      this.lastFrame = now;
+      this.battle.update(dt);
+      if (this.battle.currentActor && this.battle.currentActor.team === "ally") {
+        this.lastAllyActor = this.battle.currentActor;
+      }
+      this.map.updateCamera(dt);
+      this.renderer.update(dt, this.battle.running || this.battle.stepping);
+      this.renderer.render();
+      requestAnimationFrame(t => this.loop(t));
+    }
+  }
+
+  const canvas = document.getElementById("game");
+  const game = new Game(canvas);
+  window.__WINDSPROUT_GAME__ = game;
+  </script>
+</body>
+</html>
