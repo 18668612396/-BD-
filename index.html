@@ -96,12 +96,14 @@
     ANIMATION: {
       INTRO: 180,
       DRAW: 560,
+      STASH: 720,
       SORT_HAND: 1180,
       MERGE: 1400,
+      REMOTE_DRAW: 1100,
       ACTION_START: 900,
       MOVE_PER_CELL: 170,
       CARD_FLY: 460,
-      SKILL_TITLE: 300,
+      SKILL_TITLE: 1300,
       WINDUP: 380,
       CAST: 720,
       SETTLE: 560,
@@ -441,15 +443,6 @@
     cloneState(state) {
       return { hand: state.hand.slice(), extra: state.extra || null };
     }
-    arrange(unit, cards, previousExtra) {
-      const cooling = this.sortCards(unit, cards.filter(c => unit.isCooling(c.skill)));
-      const limit = this.handLimit(unit);
-      const extra = cooling[0] ||
-        (previousExtra && cards.includes(previousExtra) ? previousExtra : null) ||
-        (cards.length > limit ? cards[limit] : null);
-      const hand = cards.filter(c => c !== extra).slice(0, this.handLimit(unit));
-      return { hand: hand, extra: extra };
-    }
     applyState(unit, state) {
       const oldCards = unit.hand.concat(unit.extraCard ? [unit.extraCard] : []);
       oldCards.concat(this.stateCards(state)).forEach(c => c.inExtra = false);
@@ -472,11 +465,11 @@
       return null;
     }
     planAction(unit) {
-      const startingCards = unit.hand.concat(unit.extraCard ? [unit.extraCard] : []);
-      let state = this.arrange(unit, startingCards, unit.extraCard);
+      let state = { hand: unit.hand.slice(), extra: unit.extraCard || null };
       const operations = [];
       let draws = 0;
       let guard = 0;
+      let lockedExtra = null;
       const limit = this.handLimit(unit);
       const drawIntoRightmostSlot = () => {
         if (state.hand.length >= limit || draws >= CONFIG.MAX_DRAWS_PER_ACTION || !unit.skillBar.length) {
@@ -493,10 +486,47 @@
         draws++;
         return true;
       };
+      const syncCoolingExtra = () => {
+        if (lockedExtra && state.extra === lockedExtra) return false;
+        const card = this.sortCards(
+          unit,
+          this.stateCards(state).filter(item => unit.isCooling(item.skill))
+        )[0];
+        if (!card || state.extra === card) return false;
+        if (!state.extra) {
+          const after = {
+            hand: state.hand.filter(item => item !== card),
+            extra: card
+          };
+          operations.push({
+            type: "stash", before: this.cloneState(state), after: this.cloneState(after), card: card
+          });
+          state = after;
+          return true;
+        }
+        const index = state.hand.indexOf(card);
+        if (index < 0) return false;
+        const outgoing = state.extra;
+        const after = this.cloneState(state);
+        after.hand[index] = outgoing;
+        after.extra = card;
+        operations.push({
+          type: "swapExtra", before: this.cloneState(state), after: this.cloneState(after),
+          card: card, outgoing: outgoing
+        });
+        state = after;
+        return true;
+      };
+
+      // 上回合遗留的冷却牌若尚未进入保留槽，先用显式动画归位，绝不在首个抽牌帧瞬移。
+      syncCoolingExtra();
 
       // 先按抽取顺序依次填入 1…N 槽；在初次补满前不检查合成，也不改变已有卡牌槽位。
       let initialDraws = 0;
-      while (state.hand.length < limit && guard++ < 500 && drawIntoRightmostSlot()) initialDraws++;
+      while (state.hand.length < limit && guard++ < 500 && drawIntoRightmostSlot()) {
+        initialDraws++;
+        syncCoolingExtra();
+      }
 
       // 初次补牌结束后才显式整理：逻辑队列的排序不再偷偷改变屏幕上的槽位。
       if (initialDraws > 0 && state.hand.length > 1) {
@@ -513,7 +543,13 @@
       while (guard++ < 500) {
         const cards = this.stateCards(state);
         const match = this.findMerge(unit, cards);
-        if (!match) break;
+        if (!match) {
+          if (drawIntoRightmostSlot()) {
+            syncCoolingExtra();
+            continue;
+          }
+          break;
+        }
         const pair = match.pair;
         const merged = new Card(pair[0].skill, pair[0].star + 1, false);
         const mergesIntoExtra = !!state.extra && pair.includes(state.extra);
@@ -538,12 +574,26 @@
           mergesIntoExtra: mergesIntoExtra
         });
         state = after;
-        drawIntoRightmostSlot();
+        if (mergesIntoExtra) lockedExtra = merged;
+        syncCoolingExtra();
+        if (drawIntoRightmostSlot()) syncCoolingExtra();
+        continue;
+      }
+      const finalSortedHand = this.sortCards(unit, state.hand);
+      if (finalSortedHand.some((card, index) => card !== state.hand[index])) {
+        const after = this.cloneState(state);
+        after.hand = finalSortedHand;
+        operations.push({
+          type: "sort", before: this.cloneState(state), after: this.cloneState(after),
+          cards: this.stateCards(state).slice()
+        });
+        state = after;
       }
       if (state.hand.length < limit && draws >= CONFIG.MAX_DRAWS_PER_ACTION) {
         console.warn("[HandManager] 单次行动抽牌达到上限", unit.id);
         this.game.log("抽牌达到 100 张保护上限", "warn");
       }
+      // 普通手牌按可见顺序整理；结束冷却的保留牌仍按已装配技能优先级插入行动队列。
       const queue = this.sortCards(unit, this.stateCards(state));
       return {
         operations: operations,
@@ -558,9 +608,8 @@
       if (unit.extraCard === card) unit.extraCard = null;
     }
     normalizeAfterAction(unit) {
-      const cards = unit.hand.concat(unit.extraCard ? [unit.extraCard] : []);
-      const state = this.arrange(unit, cards, unit.extraCard);
-      this.applyState(unit, state);
+      // 冷却牌的保留槽调整必须留到下次行动准备阶段播放动画，这里只维护基本容量不变量。
+      unit.hand = unit.hand.filter(card => card !== unit.extraCard).slice(0, this.handLimit(unit));
     }
   }
 
@@ -1120,6 +1169,42 @@
             this.game.renderer.actionCue = null;
           }, { visualBarrier: true, label: "drawCard" });
         }
+        if (operation.type === "stash" || operation.type === "swapExtra") {
+          this.addStep(CONFIG.ANIMATION.STASH, () => {
+            this.game.hand.applyState(actor, operation.before);
+            const beforeCards = this.game.hand.stateCards(operation.before);
+            const afterCards = this.game.hand.stateCards(operation.after);
+            const shiftCards = afterCards.filter(card =>
+              beforeCards.includes(card) && card !== operation.card && card !== operation.outgoing &&
+              slotOf(operation.before, card) !== slotOf(operation.after, card)
+            ).map(card => ({
+              card: card,
+              fromRect: rectOf(operation.before, card),
+              toRect: rectOf(operation.after, card),
+              fromExtra: operation.before.extra === card,
+              toExtra: operation.after.extra === card
+            }));
+            this.game.renderer.actionCue = {
+              type: "stashCard", actor: actor, card: operation.card,
+              originRect: rectOf(operation.before, operation.card),
+              targetRect: rectOf(operation.after, operation.card),
+              outgoing: operation.outgoing || null,
+              outgoingOriginRect: operation.outgoing ? rectOf(operation.before, operation.outgoing) : null,
+              outgoingTargetRect: operation.outgoing ? rectOf(operation.after, operation.outgoing) : null,
+              shiftCards: shiftCards, progress: 0
+            };
+          }, (step, t) => {
+            if (this.game.renderer.actionCue) this.game.renderer.actionCue.progress = t;
+          }, () => {
+            this.game.hand.applyState(actor, operation.after);
+            this.game.log(
+              SKILL_DEFS[operation.card.skill].name + " 冷却中 · " +
+              (operation.outgoing ? "替换保留槽中的" + SKILL_DEFS[operation.outgoing.skill].name : "移入保留槽"),
+              "cooldown"
+            );
+            this.game.renderer.actionCue = null;
+          }, { visualBarrier: true, label: "stashCard" });
+        }
         if (operation.type === "sort") {
           this.addStep(CONFIG.ANIMATION.SORT_HAND, () => {
             this.game.hand.applyState(actor, operation.before);
@@ -1178,6 +1263,25 @@
           }, { visualBarrier: true, label: "mergeCards" });
         }
       });
+    }
+    createRemoteHandPreparationStep(actor, finalState, cardCount) {
+      this.addStep(CONFIG.ANIMATION.REMOTE_DRAW, () => {
+        this.game.hand.applyState(actor, finalState);
+        // 行动提示出现前把已缓动中的镜头稳稳落到队友身上，避免气泡追着镜头漂移。
+        this.game.map.focusOn(actor.x, actor.y, true);
+        this.game.renderer.actionCue = {
+          type: "remoteDraw", actor: actor, cardCount: cardCount, progress: 0
+        };
+      }, (step, t) => {
+        if (this.game.renderer.actionCue && this.game.renderer.actionCue.type === "remoteDraw") {
+          this.game.renderer.actionCue.progress = t;
+        }
+      }, () => {
+        this.game.log(actor.name + " 的远端手牌已同步 · " + cardCount + " 张", "draw");
+        if (this.game.renderer.actionCue && this.game.renderer.actionCue.type === "remoteDraw") {
+          this.game.renderer.actionCue = null;
+        }
+      }, { visualBarrier: true, label: "remoteDraw" });
     }
     createActionStartStep(actor, finalState, cardCount) {
       this.addStep(CONFIG.ANIMATION.ACTION_START, () => {
@@ -1298,7 +1402,9 @@
         flow.valid = true;
         flow.target = target;
         flow.aimCell = target.cell ? { x: target.cell.x, y: target.cell.y } : { x: target.x, y: target.y };
-        flow.originRect = this.game.renderer.getCardRect(card.id);
+        flow.originRect = this.game.isProtagonist(actor)
+          ? this.game.renderer.getCardRect(card.id)
+          : this.game.renderer.getRemoteCardOrigin(actor);
         this.game.hand.removeCard(actor, card);
         this.game.renderer.actionCue = {
           type: "cardFly", actor: actor, card: card, target: target,
@@ -1310,18 +1416,9 @@
         if (!flow.valid) this.game.renderer.actionCue = null;
       }, { visualBarrier: true, label: "cardFly" });
 
-      this.addStep(CONFIG.ANIMATION.SKILL_TITLE, step => {
-        if (!flow.valid) return cancelRemaining(step);
-        this.game.renderer.actionCue = {
-          type: "skillTitle", actor: actor, card: card, target: flow.target,
-          aimCell: flow.aimCell, progress: 0
-        };
-      }, (step, t) => {
-        if (this.game.renderer.actionCue) this.game.renderer.actionCue.progress = t;
-      }, null, { visualBarrier: true, label: "skillTitle" });
-
       this.addStep(CONFIG.ANIMATION.WINDUP, step => {
         if (!flow.valid) return cancelRemaining(step);
+        this.game.renderer.showSkillBanner(actor, card);
         this.game.renderer.actionCue = {
           type: "windup", actor: actor, card: card, target: flow.target,
           aimCell: flow.aimCell, progress: 0
@@ -1380,7 +1477,11 @@
         actor.name + " 已装配 " + actor.skillBar.length + " 个技能 · 普通手牌上限 " + prep.handLimit,
         "muted"
       );
-      this.createHandPreparationSteps(actor, prep.operations);
+      if (this.game.isProtagonist(actor)) {
+        this.createHandPreparationSteps(actor, prep.operations);
+      } else {
+        this.createRemoteHandPreparationStep(actor, prep.finalState, prep.queue.length);
+      }
       this.createActionStartStep(actor, prep.finalState, prep.queue.length);
       prep.queue.forEach(card => {
         this.createRepositionStep(actor, card);
@@ -1533,6 +1634,7 @@
       this.clock = 0;
       this.effects = [];
       this.actionCue = null;
+      this.skillBanners = [];
       this.cardRects = new Map();
       this.layout = null;
       this.resize();
@@ -1599,6 +1701,15 @@
     addFloat(x, y, text, color) {
       this.addEffect("float", { x: x, y: y, text: text, color: color }, 640);
     }
+    showSkillBanner(actor, card) {
+      this.skillBanners.push({
+        actor: actor,
+        card: card,
+        age: 0,
+        duration: CONFIG.ANIMATION.SKILL_TITLE
+      });
+      if (this.skillBanners.length > 8) this.skillBanners.splice(0, this.skillBanners.length - 8);
+    }
     getHandGeometry(owner) {
       const f = this.layout.field;
       const limit = owner ? this.game.hand.handLimit(owner) : 5;
@@ -1644,8 +1755,17 @@
         h: 84
       };
     }
+    getRemoteCardOrigin(actor) {
+      const p = this.game.map.worldToScreen(actor.renderX, actor.renderY);
+      const w = clamp(CONFIG.CELL * .78, 32, 54);
+      const h = w * 1.28;
+      return { x: p.x - w / 2, y: p.y - h - CONFIG.CELL * .55, w: w, h: h };
+    }
     update(dt, active) {
       this.clock += dt;
+      // 技能标题是独立 UI 提示，不依赖战斗时间线；即使单步刚结束也会按真实时间自然消失。
+      this.skillBanners.forEach(banner => banner.age += dt);
+      this.skillBanners = this.skillBanners.filter(banner => banner.age < banner.duration);
       if (active) {
         this.effects.forEach(e => e.age += dt * this.game.battle.speed);
         this.effects = this.effects.filter(e => e.age < e.duration);
@@ -2125,10 +2245,17 @@
       ctx.save();
       ctx.globalAlpha = alpha;
       const labelY = p.y - (unit.type === "elite" ? 28 : 25) * scale;
+      const protagonist = this.game.isProtagonist(unit);
       ctx.fillStyle = "rgba(10,14,15,.78)";
       roundRect(ctx, p.x - 18 * scale, labelY - 5.5 * scale, 36 * scale, 11 * scale, 4 * scale);
       ctx.fill();
-      this.text(unit.name, p.x, labelY, Math.min(12, 7.5 * scale), "#fff", "center", 700);
+      if (protagonist) {
+        ctx.strokeStyle = "#e9c863";
+        ctx.lineWidth = Math.max(1, scale);
+        ctx.stroke();
+        this.text("★", p.x - 23 * scale, labelY, Math.min(11, 7 * scale), "#f4d36f", "center", 850);
+      }
+      this.text(unit.name, p.x, labelY, Math.min(12, 7.5 * scale), protagonist ? "#ffe7a2" : "#fff", "center", 700);
       ctx.fillStyle = "rgba(10,13,14,.72)";
       roundRect(ctx, p.x - 16 * scale, p.y + 14 * scale, 32 * scale, 4.5 * scale, 2 * scale);
       ctx.fill();
@@ -2444,7 +2571,70 @@
     }
     drawActionWorldCue() {
       const cue = this.actionCue;
-      if (!cue || !cue.aimCell || !["windup", "impact", "settle"].includes(cue.type)) return;
+      if (!cue) return;
+      if (cue.type === "remoteDraw") {
+        const ctx = this.ctx;
+        const t = clamp(cue.progress || 0, 0, 1);
+        const p = this.game.map.worldToScreen(cue.actor.renderX, cue.actor.renderY);
+        const s = clamp(CONFIG.CELL / 38, .78, 1.65);
+        const alpha = Math.min(clamp(t / .14, 0, 1), clamp((1 - t) / .16, 0, 1));
+        const bob = Math.sin(this.clock / 125) * 2.2 * s;
+        const dots = ["·", "··", "···"][Math.floor(this.clock / 280) % 3];
+        const w = 90 * s;
+        const h = 27 * s;
+        const x = clamp(p.x - w / 2, CONFIG.FIELD_X + 5, CONFIG.FIELD_X + CONFIG.FIELD_W - w - 5);
+        const preferredY = p.y - 66 * s + bob;
+        const minY = CONFIG.FIELD_Y + 5;
+        const maxY = CONFIG.FIELD_Y + CONFIG.FIELD_H - h - 5;
+        const belowActor = preferredY < minY;
+        const y = belowActor
+          ? clamp(p.y + 34 * s + bob, minY, maxY)
+          : clamp(preferredY, minY, maxY);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.shadowColor = "rgba(80,211,180,.55)";
+        ctx.shadowBlur = 13 * s;
+        ctx.fillStyle = "rgba(7,13,14,.94)";
+        roundRect(ctx, x, y, w, h, h / 2);
+        ctx.fill();
+        ctx.shadowColor = "transparent";
+        ctx.strokeStyle = "#65d2ae";
+        ctx.lineWidth = 1.5 * s;
+        ctx.stroke();
+        for (let i = 0; i < 3; i++) {
+          const cw = 9 * s;
+          const ch = 13 * s;
+          const cx = x + (12 + i * 3.8) * s;
+          const cy = y + h / 2 + (i - 1) * .7 * s;
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate((i - 1) * .16 + Math.sin(this.clock / 180 + i) * .035);
+          ctx.fillStyle = i === 1 ? "#d8b96f" : "#3b806e";
+          roundRect(ctx, -cw / 2, -ch / 2, cw, ch, 2 * s);
+          ctx.fill();
+          ctx.strokeStyle = "rgba(255,247,218,.75)";
+          ctx.lineWidth = .8 * s;
+          ctx.stroke();
+          ctx.restore();
+        }
+        this.text("正在抽卡" + dots, x + 57 * s, y + h / 2, Math.min(13, 9.5 * s), "#eff9ef", "center", 800);
+        ctx.fillStyle = "rgba(7,13,14,.94)";
+        ctx.beginPath();
+        if (belowActor) {
+          ctx.moveTo(p.x - 5 * s, y + 1);
+          ctx.lineTo(p.x + 5 * s, y + 1);
+          ctx.lineTo(p.x, y - 7 * s);
+        } else {
+          ctx.moveTo(p.x - 5 * s, y + h - 1);
+          ctx.lineTo(p.x + 5 * s, y + h - 1);
+          ctx.lineTo(p.x, y + h + 7 * s);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        return;
+      }
+      if (!cue.aimCell || !["windup", "impact", "settle"].includes(cue.type)) return;
       const ctx = this.ctx;
       const t = clamp(cue.progress || 0, 0, 1);
       const def = SKILL_DEFS[cue.card.skill];
@@ -2752,8 +2942,9 @@
     }
     drawHand() {
       this.cardRects.clear();
-      const actor = this.game.battle.currentActor;
-      const owner = actor && actor.team === "ally" ? actor : this.game.lastAllyActor || this.game.getSelectedAlly();
+      const currentActor = this.game.battle.currentActor;
+      if (!this.game.isProtagonist(currentActor)) return;
+      const owner = this.game.getProtagonist() || this.game.getSelectedAlly();
       const f = this.layout.field;
       const g = this.getHandGeometry(owner);
       const cardH = g.cardH;
@@ -2766,12 +2957,17 @@
       this.ctx.fillStyle = grad;
       this.ctx.fillRect(f.x + 2, bgY, f.w - 4, cardH + 45);
       this.text(
-        "行动手牌 · " + (owner ? owner.name + " · 上限 " + g.limit + " · AP " + owner.actionPoints + "/" + owner.maxActionPoints : "—"),
+        "主角手牌 · " + (owner ? owner.name + " · 上限 " + g.limit + " · AP " + owner.actionPoints + "/" + owner.maxActionPoints : "—"),
         f.x + f.w / 2, baseY - 10, this.layout.desktop ? 12 : 9, "#eee4cf", "center", 750
       );
       const hidden = new Set();
       if (this.actionCue && this.actionCue.type === "mergeCards") {
         this.actionCue.pair.forEach(card => hidden.add(card.id));
+        (this.actionCue.shiftCards || []).forEach(item => hidden.add(item.card.id));
+      }
+      if (this.actionCue && this.actionCue.type === "stashCard") {
+        hidden.add(this.actionCue.card.id);
+        if (this.actionCue.outgoing) hidden.add(this.actionCue.outgoing.id);
         (this.actionCue.shiftCards || []).forEach(item => hidden.add(item.card.id));
       }
       if (this.actionCue && this.actionCue.type === "sortHand") {
@@ -3022,6 +3218,36 @@
         this.text("补充手牌 · " + def.name, f.x + f.w / 2, this.layout.handY - (this.layout.desktop ? 82 : 62), this.layout.desktop ? 14 : 10, "#f4e7ca", "center", 800);
         return;
       }
+      if (cue.type === "stashCard") {
+        const from = cue.originRect;
+        const to = cue.targetRect;
+        const q = ease(t);
+        const x = lerp(from.x + from.w / 2, to.x + to.w / 2, q);
+        const y = lerp(from.y + from.h / 2, to.y + to.h / 2, q) - Math.sin(q * Math.PI) * (this.layout.desktop ? 38 : 25);
+        drawFloatingCard(cue.card, x, y, to.w, to.h, (1 - q) * -.08, 1, q >= .5);
+        if (cue.outgoing) {
+          const outgoingFrom = cue.outgoingOriginRect;
+          const outgoingTo = cue.outgoingTargetRect;
+          const ox = lerp(outgoingFrom.x + outgoingFrom.w / 2, outgoingTo.x + outgoingTo.w / 2, q);
+          const oy = lerp(outgoingFrom.y + outgoingFrom.h / 2, outgoingTo.y + outgoingTo.h / 2, q) + Math.sin(q * Math.PI) * (this.layout.desktop ? 28 : 18);
+          drawFloatingCard(cue.outgoing, ox, oy, outgoingTo.w, outgoingTo.h, (1 - q) * .08, 1, q < .5);
+        }
+        const shiftQ = ease(clamp((t - .18) / .82, 0, 1));
+        (cue.shiftCards || []).forEach((item, i) => {
+          const sx = lerp(item.fromRect.x + item.fromRect.w / 2, item.toRect.x + item.toRect.w / 2, shiftQ);
+          const sy = lerp(item.fromRect.y + item.fromRect.h / 2, item.toRect.y + item.toRect.h / 2, shiftQ) - Math.sin(shiftQ * Math.PI) * (this.layout.desktop ? 10 : 7);
+          drawFloatingCard(item.card, sx, sy, item.toRect.w, item.toRect.h, (1 - shiftQ) * (i % 2 ? .02 : -.02), 1, item.toExtra);
+        });
+        ctx.save();
+        ctx.globalAlpha = Math.sin(t * Math.PI);
+        this.text(
+          cue.outgoing ? def.name + " 优先保留 · 调整冷却槽" : def.name + " 冷却中 · 移入保留槽",
+          f.x + f.w / 2, this.layout.handY - (this.layout.desktop ? 58 : 42),
+          this.layout.desktop ? 14 : 10, "#e7cc79", "center", 820
+        );
+        ctx.restore();
+        return;
+      }
       if (cue.type === "mergeCards") {
         const origins = cue.originRects;
         const target = cue.targetRect;
@@ -3106,28 +3332,6 @@
         ctx.restore();
         return;
       }
-      if (cue.type === "skillTitle") {
-        const alpha = Math.sin(t * Math.PI);
-        const w = Math.min(f.w - 44, this.layout.desktop ? 390 : 280);
-        const h = this.layout.desktop ? 76 : 62;
-        const x = f.x + (f.w - w) / 2;
-        const y = f.y + (this.layout.desktop ? 92 : 68);
-        ctx.save();
-        ctx.globalAlpha = alpha;
-        ctx.shadowColor = def.color;
-        ctx.shadowBlur = 22;
-        ctx.fillStyle = "rgba(7,10,11,.92)";
-        roundRect(ctx, x, y, w, h, h / 2);
-        ctx.fill();
-        ctx.shadowColor = "transparent";
-        ctx.strokeStyle = def.color;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        this.text(cue.actor.name + "  ·  " + def.name, x + w / 2, y + h * .42, this.layout.desktop ? 21 : 16, "#fff2d8", "center", 850);
-        this.text("★".repeat(cue.card.star) + "   技能释放", x + w / 2, y + h * .72, this.layout.desktop ? 11 : 9, "#f1c15e", "center", 750);
-        ctx.restore();
-        return;
-      }
       if (cue.type === "skip") {
         const alpha = Math.sin(t * Math.PI);
         const w = this.layout.desktop ? 260 : 210;
@@ -3143,6 +3347,39 @@
         this.text(def.name + " · " + cue.reason, x + w / 2, y + 19, this.layout.desktop ? 12 : 10, "#d5d0c4", "center", 700);
         ctx.restore();
       }
+    }
+    drawSkillBanners() {
+      if (!this.skillBanners.length) return;
+      const ctx = this.ctx;
+      const f = this.layout.field;
+      const visible = this.skillBanners.slice(-3).reverse();
+      visible.forEach((banner, index) => {
+        const def = SKILL_DEFS[banner.card.skill];
+        const remaining = banner.duration - banner.age;
+        const alpha = Math.min(clamp(banner.age / 140, 0, 1), clamp(remaining / 180, 0, 1));
+        if (alpha <= 0) return;
+        const w = Math.min(f.w - 44, this.layout.desktop ? 390 : 280);
+        const h = this.layout.desktop ? 76 : 62;
+        const x = f.x + (f.w - w) / 2;
+        const handGap = this.layout.desktop ? 34 : 28;
+        const y = this.layout.handY - handGap - h - index * (h + 6);
+        const enter = ease(clamp(banner.age / 180, 0, 1));
+        ctx.save();
+        ctx.globalAlpha = alpha * (1 - index * .10);
+        ctx.translate(0, (1 - enter) * -10);
+        ctx.shadowColor = def.color;
+        ctx.shadowBlur = 22;
+        ctx.fillStyle = "rgba(7,10,11,.92)";
+        roundRect(ctx, x, y, w, h, h / 2);
+        ctx.fill();
+        ctx.shadowColor = "transparent";
+        ctx.strokeStyle = def.color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        this.text(banner.actor.name + "  ·  " + def.name, x + w / 2, y + h * .42, this.layout.desktop ? 21 : 16, "#fff2d8", "center", 850);
+        this.text("★".repeat(banner.card.star) + "   技能释放", x + w / 2, y + h * .72, this.layout.desktop ? 11 : 9, "#f1c15e", "center", 750);
+        ctx.restore();
+      });
     }
     drawMergeOverlay() {
       const effects = this.effects.filter(e => e.type === "merge");
@@ -3187,8 +3424,9 @@
       this.panel(x, y, w, h, desktop ? 22 : 14, "rgba(11,16,17,.985)");
       this.text("配队与技能背包", x + 22, y + (desktop ? 34 : 27), desktop ? 24 : 18, "#f4ead2", "left", 850);
       const activeCount = CONFIG.ALLIES.filter(data => this.game.editorDraft.lineup[data.id]).length;
+      const protagonistData = CONFIG.ALLIES.find(data => data.id === this.game.editorDraft.protagonistId) || CONFIG.ALLIES[0];
       this.text(
-        activeCount + " 人上场 · 保存后以当前种子重新开始",
+        activeCount + " 人上场 · 主角：" + protagonistData.name,
         x + w - 22, y + (desktop ? 35 : 28), desktop ? 12 : 9, "#83c9ae", "right", 700
       );
 
@@ -3199,12 +3437,13 @@
       const drawRosterCard = (data, rx, ry, rw, rh) => {
         const selected = data.id === selectedData.id;
         const active = !!this.game.editorDraft.lineup[data.id];
+        const protagonist = data.id === this.game.editorDraft.protagonistId;
         this.game.hitRegions.push({ type: "button", id: "editorSelect:" + data.id, x: rx, y: ry, w: rw, h: rh });
         ctx.fillStyle = selected ? data.color + "42" : "rgba(26,32,32,.94)";
         roundRect(ctx, rx, ry, rw, rh, 11);
         ctx.fill();
-        ctx.strokeStyle = selected ? data.color : active ? "rgba(218,192,132,.55)" : "rgba(113,124,120,.30)";
-        ctx.lineWidth = selected ? 2.2 : 1;
+        ctx.strokeStyle = protagonist ? "#e8c86c" : selected ? data.color : active ? "rgba(218,192,132,.55)" : "rgba(113,124,120,.30)";
+        ctx.lineWidth = protagonist || selected ? 2.2 : 1;
         ctx.stroke();
         ctx.fillStyle = data.color;
         ctx.beginPath();
@@ -3212,10 +3451,14 @@
         ctx.fill();
         this.text(data.short, rx + 24, ry + rh / 2, desktop ? 12 : 10, "#fff", "center", 850);
         this.text(data.name, rx + 48, ry + rh / 2 - 8, desktop ? 14 : 11, "#f6ead4", "left", 800);
-        this.text(active ? "出战队员" : "候补角色", rx + 48, ry + rh / 2 + 10, desktop ? 10 : 8, active ? "#70c9a7" : "#87918d", "left", 650);
+        const roleText = protagonist
+          ? (desktop ? "★ 主角 · 完整抽卡" : "主角")
+          : active ? (desktop ? "联机队友 · 简略抽卡" : "队友") : (desktop ? "候补角色" : "候补");
+        this.text(roleText, rx + 48, ry + rh / 2 + 10, desktop ? 10 : 8, protagonist ? "#f1cf70" : active ? "#70c9a7" : "#87918d", "left", 650);
         const toggleW = desktop ? 66 : 52;
         const toggleH = Math.min(44, rh - 6);
-        this.button(rx + rw - toggleW - 8, ry + (rh - toggleH) / 2, toggleW, toggleH, active ? "下场" : "上场", "editorLineup:" + data.id, active, active ? "#497d6c" : "#6f5a3a");
+        const lineupLabel = protagonist ? (desktop ? "主角锁定" : "先换主") : active ? "下场" : "上场";
+        this.button(rx + rw - toggleW - 8, ry + (rh - toggleH) / 2, toggleW, toggleH, lineupLabel, "editorLineup:" + data.id, active, protagonist ? "#9a7837" : active ? "#497d6c" : "#6f5a3a");
       };
       const drawSkillCard = (skill, sx, sy, sw, sh) => {
         const def = SKILL_DEFS[skill];
@@ -3259,8 +3502,10 @@
         CONFIG.ALLIES.forEach((data, i) => drawRosterCard(data, leftX, rosterStart + i * (rosterH + 7), leftW, rosterH));
         const statsY = rosterStart + 4 * (rosterH + 7) + 12;
         this.panel(leftX, statsY, leftW, 68, 10, "rgba(24,30,29,.76)");
-        this.text(selectedData.name + " · 已装配 " + equipped.length + "/8", leftX + 13, statsY + 20, 12, "#f1e5ce", "left", 750);
-        this.text("普通手牌上限 " + limit + " · 初始行动力 " + CONFIG.ACTION_POINTS, leftX + 13, statsY + 43, 10, "#7fc5aa", "left", 700);
+        this.text(selectedData.name + " · 技能 " + equipped.length + "/8", leftX + 13, statsY + 20, 12, "#f1e5ce", "left", 750);
+        this.text("手牌上限 " + limit + " · 行动力 " + CONFIG.ACTION_POINTS, leftX + 13, statsY + 43, 10, "#7fc5aa", "left", 700);
+        const protagonistSelected = selectedData.id === this.game.editorDraft.protagonistId;
+        this.button(leftX + leftW - 91, statsY + 12, 82, 44, protagonistSelected ? "当前主角" : "设为主角", "editorProtagonist:" + selectedData.id, protagonistSelected, "#b8903f");
         this.text("技能背包 · 点击装配/卸下（数字为释放顺序）", rightX, contentTop, 13, "#d9c69b", "left", 800);
         const cols = 2, gap = 10;
         const skillW = (rightW - gap) / cols;
@@ -3281,7 +3526,14 @@
           const row = Math.floor(i / 2);
           drawRosterCard(data, x + 15 + col * (rosterW + gap), rosterStart + row * (rosterH + gap), rosterW, rosterH);
         });
-        const skillTitleY = rosterStart + rosterH * 2 + gap + 18;
+        const protagonistSelected = selectedData.id === this.game.editorDraft.protagonistId;
+        const selectedActive = !!this.game.editorDraft.lineup[selectedData.id];
+        const protagonistY = rosterStart + rosterH * 2 + gap + 9;
+        this.panel(x + 15, protagonistY, w - 30, 42, 9, "rgba(24,30,29,.76)");
+        const selectedRole = protagonistSelected ? "完整抽卡" : selectedActive ? "联机队友" : "候补 · 设主角后上场";
+        this.text(selectedData.name + " · " + selectedRole, x + 27, protagonistY + 21, 10, protagonistSelected ? "#f1cf70" : selectedActive ? "#bcd5cb" : "#9da9a4", "left", 750);
+        this.button(x + w - 104, protagonistY + 4, 86, 34, protagonistSelected ? "当前主角" : "设为主角", "editorProtagonist:" + selectedData.id, protagonistSelected, "#b8903f");
+        const skillTitleY = protagonistY + 59;
         this.text(selectedData.name + " · 技能 " + equipped.length + "/8 · 手牌上限 " + limit, x + 16, skillTitleY, 11, "#e9d9b6", "left", 800);
         this.text("点击技能装卸", x + w - 16, skillTitleY, 9, "#81bea7", "right", 700);
         const skillStart = skillTitleY + 17;
@@ -3356,6 +3608,7 @@
       this.drawSkills();
       this.drawMergeOverlay();
       this.drawActionOverlay();
+      this.drawSkillBanners();
       this.drawResult();
       if (!this.layout.desktop) {
         this.drawLogs();
@@ -3483,6 +3736,7 @@
       this.skillOrders = deepCopy(INITIAL_SKILL_ORDERS);
       this.lineup = {};
       CONFIG.ALLIES.forEach(data => this.lineup[data.id] = true);
+      this.protagonistId = "a1";
       this.logs = [];
       this.hitRegions = [];
       this.selectedAllyId = "a1";
@@ -3500,6 +3754,11 @@
     }
     reset(seed) {
       this.seed = (Number(seed) >>> 0) || 1;
+      if (!CONFIG.ALLIES.some(data => data.id === this.protagonistId && this.lineup[data.id])) {
+        const fallback = CONFIG.ALLIES.find(data => this.lineup[data.id]) || CONFIG.ALLIES[0];
+        this.protagonistId = fallback.id;
+        this.lineup[fallback.id] = true;
+      }
       CARD_SEQUENCE = 1;
       this.rng = new SeededRandom(this.seed);
       this.logs = [];
@@ -3517,6 +3776,7 @@
       this.renderer.game = this;
       this.renderer.effects = [];
       this.renderer.actionCue = null;
+      this.renderer.skillBanners = [];
       this.renderer.cardRects.clear();
       this.map.focusOn(7, 11.5, true);
       if (!this.units.some(u => u.team === "ally" && u.id === this.selectedAllyId)) {
@@ -3532,6 +3792,13 @@
       let unit = this.units.find(u => u.id === this.selectedAllyId && u.team === "ally");
       if (!unit) unit = this.units.find(u => u.team === "ally");
       return unit || null;
+    }
+    getProtagonist() {
+      return this.units.find(u => u.team === "ally" && u.id === this.protagonistId) ||
+        this.units.find(u => u.team === "ally") || null;
+    }
+    isProtagonist(unit) {
+      return !!unit && unit.team === "ally" && unit.id === this.protagonistId;
     }
     log(text, type) {
       this.logs.push({ time: this.battle ? this.battle.time : 0, text: text, type: type || "muted" });
@@ -3572,9 +3839,10 @@
       this.editorSelectedAllyId = this.selectedAllyId || CONFIG.ALLIES[0].id;
       this.editorDraft = {
         lineup: Object.assign({}, this.lineup),
-        skills: deepCopy(this.skillOrders)
+        skills: deepCopy(this.skillOrders),
+        protagonistId: this.protagonistId
       };
-      this.editorMessage = "点击角色切换编辑对象；点击技能即可装配或卸下。";
+      this.editorMessage = "点击角色切换编辑对象；可单独设为主角，只有主角播放完整抽卡过程。";
     }
     closeTeamEditor() {
       this.editorOpen = false;
@@ -3584,6 +3852,10 @@
     toggleEditorLineup(unitId) {
       if (!this.editorDraft || !(unitId in this.editorDraft.lineup)) return;
       const activeCount = CONFIG.ALLIES.filter(data => this.editorDraft.lineup[data.id]).length;
+      if (this.editorDraft.lineup[unitId] && this.editorDraft.protagonistId === unitId) {
+        this.editorMessage = "主角必须上场，请先把另一名角色设为主角。";
+        return;
+      }
       if (this.editorDraft.lineup[unitId] && activeCount <= 1) {
         this.editorMessage = "至少需要 1 名角色上场。";
         return;
@@ -3591,6 +3863,14 @@
       this.editorDraft.lineup[unitId] = !this.editorDraft.lineup[unitId];
       this.editorSelectedAllyId = unitId;
       this.editorMessage = this.editorDraft.lineup[unitId] ? "已加入出战队伍。" : "已设为候补。";
+    }
+    setEditorProtagonist(unitId) {
+      if (!this.editorDraft || !CONFIG.ALLIES.some(data => data.id === unitId)) return;
+      this.editorDraft.protagonistId = unitId;
+      this.editorDraft.lineup[unitId] = true;
+      this.editorSelectedAllyId = unitId;
+      const data = CONFIG.ALLIES.find(item => item.id === unitId);
+      this.editorMessage = "已将 " + data.name + " 设为主角：完整抽卡；其他队友使用联机抽卡提示。";
     }
     toggleEditorSkill(skill) {
       if (!this.editorDraft || !SKILL_DEFS[skill]) return;
@@ -3613,7 +3893,11 @@
         this.editorMessage = "至少需要 1 名角色上场。";
         return;
       }
+      if (!active.some(data => data.id === this.editorDraft.protagonistId)) {
+        this.editorDraft.protagonistId = active[0].id;
+      }
       this.lineup = Object.assign({}, this.editorDraft.lineup);
+      this.protagonistId = this.editorDraft.protagonistId;
       CONFIG.ALLIES.forEach(data => {
         const unique = [];
         (this.editorDraft.skills[data.id] || []).forEach(skill => {
@@ -3624,7 +3908,8 @@
       this.editorOpen = false;
       this.editorDraft = null;
       this.reset(this.seed);
-      this.log("配队与技能背包已应用 · " + active.length + " 人上场", "ally");
+      const protagonist = CONFIG.ALLIES.find(data => data.id === this.protagonistId);
+      this.log("配队与技能背包已应用 · " + active.length + " 人上场 · 主角 " + protagonist.name, "ally");
     }
     handleButton(id) {
       if (id === "teamEditor") return this.openTeamEditor();
@@ -3636,6 +3921,7 @@
         return;
       }
       if (id.startsWith("editorLineup:")) return this.toggleEditorLineup(id.split(":")[1]);
+      if (id.startsWith("editorProtagonist:")) return this.setEditorProtagonist(id.split(":")[1]);
       if (id.startsWith("editorSkill:")) return this.toggleEditorSkill(id.split(":")[1]);
       if (id === "editorBlocker") return;
       if (id === "start") this.battle.start();
