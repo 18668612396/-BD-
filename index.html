@@ -87,6 +87,7 @@
     ACTION_THRESHOLD: 100,
     ACTION_POINTS: 4,
     MOVE_PER_ACTION_POINT: 4,
+    MAX_EQUIPPED_SKILLS: 8,
     ENEMY_MOVE: 2,
     MAX_DRAWS_PER_ACTION: 100,
     HAZARD_DAMAGE: 10,
@@ -149,47 +150,105 @@
     ]
   };
 
+  // 只保留截图中上排的 13 个“战技”。蓝色范围由 castRange/minRange 表示，
+  // 红色范围由 shape 表示；方向型模板会在上下左右四个方向间旋转。
   const SKILL_DEFS = {
-    guard: {
-      name: "守护", short: "守", color: "#58c9c2", cooldownTurns: 1,
-      shield: [20, 35, 55], splashShield: 16
+    flame_ring: {
+      name: "烈焰火环", short: "环", type: "battle", rarity: "传说", element: "火",
+      color: "#f06f43", cooldownTurns: 1, kind: "selfAoe",
+      shape: { type: "diamond", radius: 2, excludeOrigin: true },
+      damage: [20, 32, 50], rangeText: "自身曼哈顿 2 格（不含自身）",
+      description: "对自身 2 格范围内所有敌人造成 1 次火元素伤害。"
     },
-    pull: {
-      name: "牵引", short: "牵", color: "#9b86dc", cooldownTurns: 1, range: 4,
-      damage: [8, 13, 20], pull: [1, 2, 3]
+    void_prayer: {
+      name: "虚空祝祷", short: "祷", type: "battle", rarity: "传说", element: "辅助",
+      color: "#d7b64c", cooldownTurns: 2, kind: "groundAllyAoe", castRange: 4,
+      shape: { type: "diamond", radius: 2 }, maxHpBuffRatio: [.128, .20, .32], durationTurns: 3,
+      emergencyHealRatio: .05, rangeText: "4 格施法 · 落点周围 2 格",
+      description: "范围友方按自身最大生命比例获得 3 回合上限增益（1★为 12.8%）；生命低于 30% 时额外治疗。"
     },
-    sunder: {
-      name: "破甲", short: "破", color: "#e5a15e", cooldownTurns: 1, range: 4,
-      damage: [10, 16, 24], duration: [3, 5, 7]
+    wind_god_feather: {
+      name: "风神之羽", short: "羽", type: "battle", rarity: "传说", element: "风",
+      color: "#55c99a", cooldownTurns: 1, kind: "groundVolley", castRange: 6,
+      candidateHalfWidth: 1, waveRadius: 1, shots: 7, repeatDecay: .35,
+      perHit: [5, 8, 12], rangeText: "6 格选敌 · 目标左右 1 格 · 每波周围 1 格",
+      description: "选取敌人后，在其左右候选目标间随机发出 7 波风刃；每波造成范围伤害，重复命中依次衰减 35%。"
     },
-    slash: {
-      name: "斩击", short: "斩", color: "#ed727d", cooldownTurns: 0, range: 1,
-      damage: [18, 30, 48], splashDamage: 24
+    water_dragon: {
+      name: "水龙术", short: "龙", type: "battle", rarity: "传说", element: "水",
+      color: "#55bde8", cooldownTurns: 1, kind: "directionalDamage",
+      shape: { type: "rectangle", width: 3, depth: 4 }, damage: [18, 29, 46],
+      rangeText: "身前 3×4 格，可四向旋转",
+      description: "对身前 3×4 格内所有敌人造成 1 次水元素伤害。"
     },
-    fireball: {
-      name: "火球", short: "火", color: "#f28a65", cooldownTurns: 2, range: 4,
-      damage: [16, 27, 42]
+    stone_chief: {
+      name: "唤灵·石酋", short: "酋", type: "battle", rarity: "史诗", element: "召唤",
+      color: "#b9a579", cooldownTurns: 2, kind: "summon", summonDistance: 2,
+      summonHpRatio: [.58, .75, 1], summonAttackRatio: [.80, 1.05, 1.35], summonTurns: 5,
+      rangeText: "正前方第 2 格，可四向旋转",
+      description: "召唤继承角色生命与战力的石酋并令其立即行动；石酋存在 5 个自身回合。"
     },
-    heal: {
-      name: "治疗", short: "疗", color: "#70c980", cooldownTurns: 2, range: 4,
-      heal: [18, 30, 48], splashHeal: 18
+    wind_breath_bolt: {
+      name: "风息飞弹", short: "息", type: "battle", rarity: "史诗", element: "风",
+      color: "#61cbb0", cooldownTurns: 1, kind: "singleEnemy", minRange: 3, castRange: 5,
+      hits: 5, perHit: [5, 8, 12], rangeText: "仅可攻击距离 3～5 格",
+      description: "对 1 个敌人连续造成 5 次风元素伤害。"
     },
-    charge: {
-      name: "冲锋", short: "冲", color: "#589fe2", cooldownTurns: 2,
-      distance: [2, 3, 4], damage: [16, 28, 43]
+    tornado: {
+      name: "龙卷", short: "卷", type: "battle", rarity: "史诗", element: "风",
+      color: "#52bda9", cooldownTurns: 1, kind: "groundEnemyAoe", castRange: 6,
+      shape: { type: "diamond", radius: 2 }, damage: [15, 24, 38], airborneTurns: 1,
+      pullToAim: true, rangeText: "6 格施法 · 落点周围 2 格",
+      description: "造成范围风伤并浮空 1 回合，同时把敌人聚拢到落点周围。"
     },
-    rapid: {
-      name: "连射", short: "连", color: "#d9ac42", cooldownTurns: 1, range: 5,
-      hits: [2, 3, 4], perHit: [7, 9, 12]
+    fireball_spell: {
+      name: "火球术", short: "球", type: "battle", rarity: "史诗", element: "火",
+      color: "#ef724c", cooldownTurns: 1, kind: "groundEnemyAoe", castRange: 5,
+      shape: { type: "square", radius: 1 }, damage: [18, 30, 48],
+      rangeText: "5 格施法 · 落点 3×3 方形",
+      description: "对落点 1 格方形范围内所有敌人造成 1 次火元素伤害。"
+    },
+    healing_spell: {
+      name: "治疗术", short: "疗", type: "battle", rarity: "史诗", element: "治疗",
+      color: "#65c47a", cooldownTurns: 1, kind: "singleAlly", castRange: 5,
+      heal: [20, 34, 54], dispel: 1, rangeText: "5 格内单个友方",
+      description: "治疗 1 个友方，并驱散 1 个异常状态或负面效果。"
+    },
+    ice_cone: {
+      name: "冰锥术", short: "冰", type: "battle", rarity: "稀有", element: "水",
+      color: "#63aee5", cooldownTurns: 1, kind: "directionalDamage",
+      shape: { type: "rectangle", width: 1, depth: 5 }, damage: [15, 25, 40],
+      freezeChance: .40, freezeTurns: 1, rangeText: "身前 1×5 格，可四向旋转",
+      description: "造成直线水伤，并有 40% 概率冰冻敌人 1 回合。"
+    },
+    flame_spray: {
+      name: "火焰喷射", short: "喷", type: "battle", rarity: "稀有", element: "火",
+      color: "#ed7848", cooldownTurns: 1, kind: "directionalDamage",
+      shape: { type: "rectangle", width: 1, depth: 3 }, hits: 3,
+      perHit: [8, 13, 21], rangeText: "身前 1×3 格，可四向旋转",
+      description: "对直线范围内所有敌人连续造成 3 次火元素伤害。"
+    },
+    thorn_incantation: {
+      name: "铁棘咒文", short: "棘", type: "battle", rarity: "稀有", element: "风",
+      color: "#61b994", cooldownTurns: 1, kind: "groundEnemyAoe", castRange: 3,
+      shape: { type: "diamond", radius: 1 }, damage: [16, 27, 43],
+      rootChance: .30, rootTurns: 1, rangeText: "3 格施法 · 落点周围 1 格",
+      description: "造成范围风伤，并有 30% 概率定身敌人 1 回合。"
+    },
+    water_bullet: {
+      name: "水弹", short: "弹", type: "battle", rarity: "稀有", element: "水",
+      color: "#5ca9dc", cooldownTurns: 0, kind: "singleEnemy", castRange: 4,
+      damage: [14, 24, 38], rangeText: "4 格内单个敌人",
+      description: "对 1 个敌人造成 1 次水元素伤害；无冷却。"
     }
   };
 
   const SKILL_KEYS = Object.keys(SKILL_DEFS);
   const INITIAL_SKILL_ORDERS = {
-    a1: ["guard", "slash", "charge", "heal", "pull", "sunder", "fireball", "rapid"],
-    a2: ["rapid", "fireball", "sunder", "pull", "charge", "slash", "heal", "guard"],
-    a3: ["heal", "guard", "fireball", "pull", "sunder", "rapid", "slash", "charge"],
-    a4: ["slash", "charge", "guard", "sunder", "pull", "rapid", "fireball", "heal"]
+    a1: ["water_bullet", "fireball_spell", "thorn_incantation", "wind_breath_bolt", "flame_ring", "healing_spell", "water_dragon", "stone_chief"],
+    a2: ["wind_breath_bolt", "wind_god_feather", "tornado", "ice_cone", "water_bullet", "fireball_spell", "healing_spell"],
+    a3: ["void_prayer", "healing_spell", "stone_chief", "thorn_incantation", "water_bullet", "tornado"],
+    a4: ["water_dragon", "flame_spray", "ice_cone", "flame_ring", "wind_god_feather", "wind_breath_bolt", "fireball_spell", "water_bullet"]
   };
 
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -257,6 +316,13 @@
       this.alive = true;
       this.deathFade = 1;
       this.vulnerableUntil = 0;
+      this.skipTurns = 0;
+      this.rootTurns = 0;
+      this.slowTurns = 0;
+      this.voidBuffAmount = 0;
+      this.voidBuffTurns = 0;
+      this.ownerId = data.ownerId || null;
+      this.summonTurns = data.summonTurns || 0;
       this.passiveSlots = [null, null, null, null, null];
       this.skillBar = skillOrder ? skillOrder.slice() : [];
       this.cooldowns = {};
@@ -290,6 +356,28 @@
           if (this.cooldowns[skill] <= 0) this.cooldownStartedAt[skill] = -1;
         }
       });
+    }
+    finishOwnTurnStatuses(game) {
+      if (this.skipTurns > 0) this.skipTurns--;
+      if (this.rootTurns > 0) this.rootTurns--;
+      if (this.slowTurns > 0) this.slowTurns--;
+      if (this.voidBuffTurns > 0) {
+        this.voidBuffTurns--;
+        if (this.voidBuffTurns <= 0 && this.voidBuffAmount > 0) {
+          this.maxHp = Math.max(1, this.maxHp - this.voidBuffAmount);
+          this.hp = Math.min(this.hp, this.maxHp);
+          this.voidBuffAmount = 0;
+          if (game) game.log(this.name + " 的虚空祝祷效果结束", "muted");
+        }
+      }
+      if (this.type === "summon" && this.summonTurns > 0) {
+        this.summonTurns--;
+        if (this.summonTurns <= 0) {
+          this.alive = false;
+          this.deathFade = 1;
+          if (game) game.log(this.name + " 完成 5 回合行动后消散", "muted");
+        }
+      }
     }
   }
 
@@ -631,308 +719,498 @@
         return a.id.localeCompare(b.id);
       })[0];
     }
-    areaCells(center, star) {
-      const cells = [{ x: center.x, y: center.y }];
-      if (star >= 2) {
-        cells.push(
-          { x: center.x + 1, y: center.y },
-          { x: center.x - 1, y: center.y },
-          { x: center.x, y: center.y + 1 },
-          { x: center.x, y: center.y - 1 }
-        );
+    stableRandomIndex(parts, length) {
+      if (length <= 1) return 0;
+      const text = [this.game.seed].concat(parts).join(":");
+      let hash = 2166136261;
+      for (let i = 0; i < text.length; i++) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
       }
-      return cells.filter(p => this.game.map.inBounds(p.x, p.y));
+      return (hash >>> 0) % length;
+    }
+    directions() {
+      return ["up", "right", "down", "left"];
+    }
+    rotateOffset(offset, direction) {
+      if (direction === "right") return { x: -offset.y, y: offset.x };
+      if (direction === "down") return { x: -offset.x, y: -offset.y };
+      if (direction === "left") return { x: offset.y, y: -offset.x };
+      return { x: offset.x, y: offset.y };
+    }
+    shapeOffsets(shape, direction) {
+      const offsets = [];
+      if (!shape) return [{ x: 0, y: 0 }];
+      if (shape.type === "diamond") {
+        for (let y = -shape.radius; y <= shape.radius; y++) {
+          for (let x = -shape.radius; x <= shape.radius; x++) {
+            if (Math.abs(x) + Math.abs(y) > shape.radius) continue;
+            if (shape.excludeOrigin && x === 0 && y === 0) continue;
+            offsets.push({ x: x, y: y });
+          }
+        }
+      } else if (shape.type === "square") {
+        for (let y = -shape.radius; y <= shape.radius; y++) {
+          for (let x = -shape.radius; x <= shape.radius; x++) offsets.push({ x: x, y: y });
+        }
+      } else if (shape.type === "rectangle") {
+        const half = Math.floor(shape.width / 2);
+        for (let forward = 1; forward <= shape.depth; forward++) {
+          for (let side = -half; side <= half; side++) {
+            offsets.push(this.rotateOffset({ x: side, y: -forward }, direction || "up"));
+          }
+        }
+      } else {
+        offsets.push({ x: 0, y: 0 });
+      }
+      return offsets;
+    }
+    cellsFromShape(origin, shape, direction) {
+      return this.shapeOffsets(shape, direction).map(offset => ({
+        x: origin.x + offset.x,
+        y: origin.y + offset.y
+      })).filter(cell => this.game.map.inBounds(cell.x, cell.y));
+    }
+    aimCells(origin, minRange, maxRange) {
+      const result = [];
+      const min = Math.max(0, minRange || 0);
+      for (let y = 0; y < CONFIG.MAP_ROWS; y++) {
+        for (let x = 0; x < CONFIG.MAP_COLS; x++) {
+          const cell = { x: x, y: y };
+          const distance = manhattan(origin, cell);
+          if (distance >= min && distance <= maxRange) result.push(cell);
+        }
+      }
+      return result;
+    }
+    unitsInCells(units, cells) {
+      const keys = new Set(cells.map(cell => keyOf(cell.x, cell.y)));
+      return units.filter(unit => keys.has(keyOf(unit.x, unit.y)));
+    }
+    makePlan(cell, affectedCells, targets, allies, direction, primary) {
+      return {
+        id: keyOf(cell.x, cell.y) + ":" + (direction || "none"),
+        cell: { x: cell.x, y: cell.y },
+        affectedCells: (affectedCells || []).map(p => ({ x: p.x, y: p.y })),
+        targets: (targets || []).slice(),
+        allies: (allies || []).slice(),
+        direction: direction || null,
+        primary: primary || (targets && targets[0]) || (allies && allies[0]) || null
+      };
+    }
+    needsDispel(unit) {
+      return (unit.skipTurns || 0) > 0 || (unit.rootTurns || 0) > 0 ||
+        (unit.slowTurns || 0) > 0 || unit.vulnerableUntil > this.game.battle.time;
+    }
+    hasPotentialTarget(actor, card) {
+      const def = SKILL_DEFS[card.skill];
+      if (!def) return false;
+      if (def.kind === "singleAlly") {
+        return this.alliesOf(actor).some(u => u.type !== "summon" && (u.hp < u.maxHp || this.needsDispel(u)));
+      }
+      if (def.kind === "groundAllyAoe") return this.alliesOf(actor).some(u => u.type !== "summon");
+      if (def.kind === "summon") return true;
+      return this.enemiesOf(actor).length > 0;
     }
     findTarget(actor, card, pos) {
       const def = SKILL_DEFS[card.skill];
+      if (!def) return null;
       const origin = pos || { x: actor.x, y: actor.y };
       const allies = this.alliesOf(actor);
+      const selectableAllies = allies.filter(u => u.type !== "summon");
       const enemies = this.enemiesOf(actor);
-      const inRange = (u, r) => manhattan(origin, u) <= r;
-      if (card.skill === "guard") {
-        return this.chooseStable(allies, u => u.hpRatio(), false);
+
+      if (def.kind === "selfAoe") {
+        const cells = this.cellsFromShape(origin, def.shape);
+        const targets = this.unitsInCells(enemies, cells);
+        return targets.length ? this.makePlan(origin, cells, targets, [], null, targets[0]) : null;
       }
-      if (card.skill === "pull") {
-        return this.chooseStable(enemies.filter(u => inRange(u, def.range)), u => manhattan(origin, u), false);
-      }
-      if (card.skill === "sunder") {
-        return this.chooseStable(enemies.filter(u => inRange(u, def.range)), u => u.hpRatio(), true);
-      }
-      if (card.skill === "slash") {
-        return this.chooseStable(enemies.filter(u => inRange(u, 1)), u => u.hpRatio(), false);
-      }
-      if (card.skill === "fireball") {
-        const choices = [];
-        for (let y = 0; y < CONFIG.MAP_ROWS; y++) {
-          for (let x = 0; x < CONFIG.MAP_COLS; x++) {
-            const cell = { x: x, y: y };
-            if (manhattan(origin, cell) > def.range) continue;
-            const cells = this.areaCells(cell, card.star);
-          const targets = enemies.filter(u => cells.some(p => p.x === u.x && p.y === u.y));
-            if (targets.length) choices.push({ id: keyOf(x, y), cell: cell, targets: targets });
-          }
-        }
-        if (!choices.length) return null;
-        return choices.sort((a, b) =>
+
+      if (def.kind === "directionalDamage") {
+        const plans = this.directions().map(direction => {
+          const cells = this.cellsFromShape(origin, def.shape, direction);
+          const targets = this.unitsInCells(enemies, cells);
+          const endOffset = this.rotateOffset({ x: 0, y: -def.shape.depth }, direction);
+          const aim = targets[0] ? { x: targets[0].x, y: targets[0].y } : { x: origin.x + endOffset.x, y: origin.y + endOffset.y };
+          return this.makePlan(aim, cells, targets, [], direction, targets[0]);
+        }).filter(plan => plan.targets.length);
+        plans.sort((a, b) =>
           b.targets.length - a.targets.length ||
-          a.targets.reduce((s, u) => s + u.hp, 0) - b.targets.reduce((s, u) => s + u.hp, 0) ||
-          a.id.localeCompare(b.id)
-        )[0];
-      }
-      if (card.skill === "heal") {
-        const hurt = allies.filter(u => inRange(u, def.range) && u.hp < u.maxHp);
-        return this.chooseStable(hurt, u => u.hpRatio(), false);
-      }
-      if (card.skill === "charge") {
-        const max = def.distance[card.star - 1];
-        const reachable = enemies.map(target => ({
-          target: target,
-          path: this.chargePath(actor, target, max, origin)
-        })).filter(item => {
-          const end = item.path[item.path.length - 1];
-          return end && manhattan(end, item.target) === 1;
-        }).sort((a, b) =>
-          manhattan(origin, a.target) - manhattan(origin, b.target) ||
-          a.path.length - b.path.length ||
-          a.target.id.localeCompare(b.target.id)
+          a.targets.reduce((sum, u) => sum + u.hp, 0) - b.targets.reduce((sum, u) => sum + u.hp, 0) ||
+          this.directions().indexOf(a.direction) - this.directions().indexOf(b.direction)
         );
-        return reachable.length ? reachable[0].target : null;
+        return plans[0] || null;
       }
-      if (card.skill === "rapid") {
-        return this.chooseStable(enemies.filter(u => inRange(u, def.range)), u => u.hpRatio(), false);
+
+      if (def.kind === "singleEnemy") {
+        const minRange = def.minRange || 0;
+        const targets = enemies.filter(u => {
+          const distance = manhattan(origin, u);
+          return distance >= minRange && distance <= def.castRange;
+        });
+        const allRatiosEqual = targets.length > 1 && targets.every(unit => Math.abs(unit.hpRatio() - targets[0].hpRatio()) < .0001);
+        if (allRatiosEqual) {
+          targets.sort((a, b) => a.id.localeCompare(b.id));
+          const index = this.stableRandomIndex(
+            [actor.id, actor.actionCount, card.skill, origin.x, origin.y], targets.length
+          );
+          const target = targets[index];
+          return target ? this.makePlan(target, [target], [target], [], null, target) : null;
+        }
+        targets.sort((a, b) =>
+          a.hpRatio() - b.hpRatio() ||
+          manhattan(origin, a) - manhattan(origin, b) ||
+          a.id.localeCompare(b.id)
+        );
+        const target = targets[0];
+        return target ? this.makePlan(target, [target], [target], [], null, target) : null;
+      }
+
+      if (def.kind === "singleAlly") {
+        const targets = selectableAllies.filter(u =>
+          manhattan(origin, u) <= def.castRange && (u.hp < u.maxHp || this.needsDispel(u))
+        ).sort((a, b) =>
+          a.hpRatio() - b.hpRatio() ||
+          (this.needsDispel(b) ? 1 : 0) - (this.needsDispel(a) ? 1 : 0) ||
+          manhattan(origin, a) - manhattan(origin, b) || a.id.localeCompare(b.id)
+        );
+        const target = targets[0];
+        return target ? this.makePlan(target, [target], [], [target], null, target) : null;
+      }
+
+      if (def.kind === "groundVolley") {
+        // 先选取 6 格内的地块作为锚点。7 波风刃只会在锚点及其左右 1 格的
+        // 敌人之间随机选取，每一波再对所选目标周围 1 格造成范围伤害。
+        const plans = this.aimCells(origin, 0, def.castRange).map(cell => {
+          const candidateCells = [];
+          for (let dx = -def.candidateHalfWidth; dx <= def.candidateHalfWidth; dx++) {
+            candidateCells.push({ x: cell.x + dx, y: cell.y });
+          }
+          const candidates = this.unitsInCells(enemies, candidateCells);
+          const affectedByKey = new Map();
+          candidates.forEach(candidate => {
+            this.cellsFromShape(candidate, { type: "diamond", radius: def.waveRadius }).forEach(cell => {
+              affectedByKey.set(keyOf(cell.x, cell.y), cell);
+            });
+          });
+          const affectedCells = Array.from(affectedByKey.values());
+          const targets = this.unitsInCells(enemies, affectedCells);
+          const primary = candidates.slice().sort((a, b) => a.hpRatio() - b.hpRatio() || a.id.localeCompare(b.id))[0] || null;
+          const plan = this.makePlan(cell, affectedCells, targets, [], null, primary);
+          plan.volleyCandidates = candidates.slice();
+          return plan;
+        }).filter(plan => plan.volleyCandidates.length && plan.targets.length);
+        plans.sort((a, b) =>
+          b.targets.length - a.targets.length ||
+          b.volleyCandidates.length - a.volleyCandidates.length ||
+          a.primary.hpRatio() - b.primary.hpRatio() ||
+          manhattan(origin, a.primary) - manhattan(origin, b.primary) ||
+          a.id.localeCompare(b.id)
+        );
+        return plans[0] || null;
+      }
+
+      if (def.kind === "groundEnemyAoe") {
+        const plans = this.aimCells(origin, 0, def.castRange).map(cell => {
+          const cells = this.cellsFromShape(cell, def.shape);
+          const targets = this.unitsInCells(enemies, cells);
+          return this.makePlan(cell, cells, targets, [], null, targets[0]);
+        }).filter(plan => plan.targets.length);
+        plans.sort((a, b) =>
+          b.targets.length - a.targets.length ||
+          a.targets.reduce((sum, u) => sum + u.hp, 0) - b.targets.reduce((sum, u) => sum + u.hp, 0) ||
+          manhattan(origin, b.cell) - manhattan(origin, a.cell) || a.id.localeCompare(b.id)
+        );
+        return plans[0] || null;
+      }
+
+      if (def.kind === "groundAllyAoe") {
+        const plans = this.aimCells(origin, 0, def.castRange).map(cell => {
+          const cells = this.cellsFromShape(cell, def.shape);
+          const covered = this.unitsInCells(selectableAllies, cells);
+          return this.makePlan(cell, cells, [], covered, null, covered[0]);
+        }).filter(plan => plan.allies.length);
+        plans.sort((a, b) => {
+          const aUrgency = a.allies.reduce((sum, u) => sum + (1 - u.hpRatio()) * 2 + (u.hpRatio() < .3 ? 2 : 0), 0);
+          const bUrgency = b.allies.reduce((sum, u) => sum + (1 - u.hpRatio()) * 2 + (u.hpRatio() < .3 ? 2 : 0), 0);
+          return b.allies.length - a.allies.length || bUrgency - aUrgency ||
+            manhattan(origin, b.cell) - manhattan(origin, a.cell) || a.id.localeCompare(b.id);
+        });
+        return plans[0] || null;
+      }
+
+      if (def.kind === "summon") {
+        if (!this.hasPotentialTarget(actor, card)) return null;
+        const plans = this.directions().map(direction => {
+          const offset = this.rotateOffset({ x: 0, y: -def.summonDistance }, direction);
+          const cell = { x: origin.x + offset.x, y: origin.y + offset.y };
+          if (this.game.map.isBlocked(cell.x, cell.y, actor)) return null;
+          return this.makePlan(cell, [cell], [], [], direction, null);
+        }).filter(Boolean).sort((a, b) =>
+          this.game.ai && this.game.ai.enemyThreatAt(a.cell, actor.team) - this.game.ai.enemyThreatAt(b.cell, actor.team) ||
+          this.game.map.isDanger(a.cell.x, a.cell.y) - this.game.map.isDanger(b.cell.x, b.cell.y) ||
+          a.id.localeCompare(b.id)
+        );
+        return plans[0] || null;
       }
       return null;
     }
+    targetDistance(pos, plan) {
+      const units = plan.targets.length ? plan.targets : plan.allies.length ? plan.allies : plan.primary ? [plan.primary] : [];
+      return units.length ? Math.min.apply(null, units.map(unit => manhattan(pos, unit))) : manhattan(pos, plan.cell);
+    }
     estimate(actor, card, pos) {
-      const target = this.findTarget(actor, card, pos);
-      if (!target) return { castable: false, damage: 0, heal: 0, aoe: 0, kills: 0 };
+      const plan = this.findTarget(actor, card, pos);
+      if (!plan) return { castable: false, damage: 0, heal: 0, aoe: 0, kills: 0, targetDistance: 0, plan: null };
       const def = SKILL_DEFS[card.skill];
+      const star = clamp(card.star, 1, 3) - 1;
       let damage = 0;
       let heal = 0;
-      let aoe = 0;
       let kills = 0;
-      if (card.skill === "guard") {
-        heal = Math.min(def.shield[card.star - 1], 80 - Math.min(80, target.shield));
-      } else if (card.skill === "pull") {
-        damage = def.damage[card.star - 1];
-        kills = damage >= target.hp ? 1 : 0;
-      } else if (card.skill === "sunder") {
-        damage = def.damage[card.star - 1];
-        kills = damage >= target.hp ? 1 : 0;
-      } else if (card.skill === "slash") {
-        damage = def.damage[card.star - 1];
-        aoe = card.star === 3 ? this.enemiesOf(actor).filter(u => manhattan(u, target) === 1).length : 0;
-        damage += aoe * def.splashDamage;
-        kills = damage >= target.hp ? 1 : 0;
-      } else if (card.skill === "fireball") {
-        aoe = target.targets.length;
-        damage = def.damage[card.star - 1] * aoe;
-        kills = target.targets.filter(u => def.damage[card.star - 1] >= u.hp).length;
-      } else if (card.skill === "heal") {
-        heal = Math.min(def.heal[card.star - 1], target.maxHp - target.hp);
-      } else if (card.skill === "charge") {
-        damage = def.damage[card.star - 1];
-        kills = damage >= target.hp ? 1 : 0;
-      } else if (card.skill === "rapid") {
-        damage = def.hits[card.star - 1] * def.perHit[card.star - 1];
-        kills = damage >= target.hp ? 1 : 0;
+      const targets = plan.targets || [];
+      const hitCount = def.hits || 1;
+      const base = def.damage ? def.damage[star] : def.perHit ? def.perHit[star] : 0;
+      if (def.kind === "groundVolley") {
+        const candidates = plan.volleyCandidates || targets;
+        const repeatCounts = new Map();
+        const damageByTarget = new Map();
+        for (let i = 0; i < def.shots; i++) {
+          const center = candidates[i % candidates.length];
+          targets.filter(unit => manhattan(unit, center) <= def.waveRadius).forEach(unit => {
+            const repeats = repeatCounts.get(unit.id) || 0;
+            const amount = Math.max(1, base * Math.pow(1 - def.repeatDecay, repeats));
+            damage += amount;
+            damageByTarget.set(unit.id, (damageByTarget.get(unit.id) || 0) + amount);
+            repeatCounts.set(unit.id, repeats + 1);
+          });
+        }
+        kills = targets.filter(unit => (damageByTarget.get(unit.id) || 0) >= unit.hp).length;
+      } else if (def.kind === "summon") {
+        damage = this.summonStats(actor, def, star).attack * 2;
+      } else {
+        const perTarget = base * hitCount;
+        damage = perTarget * targets.length;
+        kills = targets.filter(u => perTarget >= u.hp).length;
       }
-      return { castable: true, damage: damage, heal: heal, aoe: aoe, kills: kills };
-    }
-    pullPath(target, actor, steps) {
-      const path = [{ x: target.x, y: target.y }];
-      let cur = { x: target.x, y: target.y };
-      for (let i = 0; i < steps; i++) {
-        const options = this.game.map.neighbors(cur.x, cur.y)
-          .filter(p => !this.game.map.isBlocked(p.x, p.y, target))
-          .filter(p => manhattan(p, actor) < manhattan(cur, actor))
-          .sort((a, b) =>
-            manhattan(a, actor) - manhattan(b, actor) ||
-            a.y - b.y || a.x - b.x
-          );
-        if (!options.length) break;
-        cur = options[0];
-        path.push(cur);
+      if (def.kind === "singleAlly") {
+        const target = plan.allies[0];
+        heal = Math.min(def.heal[star], target.maxHp - target.hp) + (this.needsDispel(target) ? 12 : 0);
       }
-      return path;
-    }
-    chargePath(actor, target, maxSteps, origin) {
-      const start = origin || { x: actor.x, y: actor.y };
-      const candidates = this.game.map.reachableFrom(actor, start, maxSteps)
-        .filter(n => !(n.x === start.x && n.y === start.y) || manhattan(start, target) === 1)
-        .sort((a, b) =>
-          manhattan(a, target) - manhattan(b, target) ||
-          a.d - b.d || a.y - b.y || a.x - b.x
+      if (def.kind === "groundAllyAoe") {
+        heal = plan.allies.reduce((sum, unit) => sum + this.voidBuffValue(unit, def.maxHpBuffRatio[star]), 0) + plan.allies.reduce((sum, u) =>
+          sum + (u.hpRatio() < .3 ? Math.ceil(u.maxHp * def.emergencyHealRatio) : 0), 0
         );
-      const best = candidates.find(n => manhattan(n, target) === 1);
-      return best ? best.path : [{ x: start.x, y: start.y }];
+      }
+      return {
+        castable: true, damage: Math.round(damage), heal: Math.round(heal),
+        aoe: Math.max(0, targets.length - 1), kills: kills,
+        targetDistance: this.targetDistance(pos || actor, plan), plan: plan
+      };
     }
     impactMoment(skill) {
-      return {
-        guard: .44,
-        pull: .48,
-        sunder: .52,
-        slash: .42,
-        fireball: .60,
-        heal: .48,
-        charge: .56,
-        rapid: .80
-      }[skill] || .5;
+      return skill === "wind_breath_bolt" || skill === "wind_god_feather" || skill === "flame_spray" ? .76 :
+        skill === "stone_chief" ? .58 : skill === "healing_spell" || skill === "void_prayer" ? .48 : .57;
     }
     playCastEffect(actor, card, target) {
       const def = SKILL_DEFS[card.skill];
       const star = card.star;
       const from = { x: actor.x, y: actor.y };
-      if (card.skill === "guard") {
-        this.game.renderer.addEffect("shield", {
-          x: target.x, y: target.y, color: def.color, star: star
-        }, 760);
-      }
-      if (card.skill === "pull") {
-        this.game.renderer.addEffect("chain", {
-          from: from, targetUnit: target, color: def.color, star: star
-        }, 720);
-      }
-      if (card.skill === "sunder") {
-        this.game.renderer.addEffect("sunder", {
-          x: target.x, y: target.y, from: from, color: def.color, star: star
-        }, 720);
-      }
-      if (card.skill === "slash") {
-        this.game.renderer.addEffect("slash", {
-          x: target.x, y: target.y, color: def.color, star: star
-        }, 680);
-      }
-      if (card.skill === "fireball") {
+      const primary = target.primary || target.targets[0] || target.allies[0];
+      if (card.skill === "fireball_spell") {
         this.game.renderer.addEffect("fireball", {
           from: from, to: target.cell, color: def.color, star: star
         }, 760);
-      }
-      if (card.skill === "heal") {
+      } else if (card.skill === "healing_spell" && primary) {
         this.game.renderer.addEffect("heal", {
-          x: target.x, y: target.y, color: def.color, star: star
+          x: primary.x, y: primary.y, color: def.color, star: star
         }, 780);
-      }
-      if (card.skill === "charge") {
-        const path = this.chargePath(actor, target, def.distance[star - 1]);
-        this.game.renderer.addEffect("charge", {
-          path: path.map(p => ({ x: p.x, y: p.y })),
-          target: { x: target.x, y: target.y }, color: def.color, star: star
-        }, 760);
-      }
-      if (card.skill === "rapid") {
+      } else if (card.skill === "void_prayer") {
+        target.allies.forEach(unit => this.game.renderer.addEffect("shield", {
+          x: unit.x, y: unit.y, color: def.color, star: star
+        }, 780));
+      } else if (card.skill === "wind_god_feather") {
+        const livingCandidates = (target.volleyCandidates || target.targets).filter(unit => unit.alive);
+        target.preparedVolleyCenters = [];
+        for (let i = 0; i < def.shots && livingCandidates.length; i++) {
+          const unit = livingCandidates[this.game.rng.int(livingCandidates.length)];
+          target.preparedVolleyCenters.push({ x: unit.x, y: unit.y, unitId: unit.id });
+        }
         this.game.renderer.addEffect("rapid", {
-          from: from, to: { x: target.x, y: target.y }, color: def.color,
-          hits: def.hits[star - 1], star: star
+          from: from,
+          to: target.cell,
+          tos: target.preparedVolleyCenters.map(center => ({ x: center.x, y: center.y })),
+          color: def.color, hits: def.shots, star: star
         }, 700);
+      } else if (card.skill === "wind_breath_bolt" || card.skill === "flame_spray") {
+        this.game.renderer.addEffect("rapid", {
+          from: from, to: primary ? { x: primary.x, y: primary.y } : target.cell, color: def.color,
+          hits: def.shots || def.hits || 3, star: star
+        }, 700);
+      } else if (card.skill === "thorn_incantation" && primary) {
+        this.game.renderer.addEffect("chain", { from: from, targetUnit: primary, color: def.color, star: star }, 720);
+      } else if (card.skill === "water_bullet" && primary) {
+        this.game.renderer.addEffect("projectile", {
+          from: from, to: { x: primary.x, y: primary.y }, color: def.color, shape: "orb"
+        }, 620);
+      } else if (card.skill === "stone_chief") {
+        this.game.renderer.addEffect("aura", { x: target.cell.x, y: target.cell.y, color: def.color, star: star }, 760);
+      } else if (card.skill === "flame_ring") {
+        this.game.renderer.addEffect("aura", { x: actor.x, y: actor.y, color: def.color, star: star }, 720);
+      } else {
+        this.game.renderer.addEffect("projectile", {
+          from: from, to: target.cell, color: def.color, shape: "multi"
+        }, 680);
       }
     }
     playResolveEffect(actor, card, target) {
-      if (card.skill !== "fireball") return;
       const def = SKILL_DEFS[card.skill];
-      this.game.renderer.addEffect("burst", {
-        x: target.cell.x, y: target.cell.y, color: def.color, star: card.star
-      }, 520);
+      if (["groundEnemyAoe", "groundVolley", "directionalDamage", "selfAoe"].includes(def.kind)) {
+        this.game.renderer.addEffect("burst", {
+          x: target.cell.x, y: target.cell.y, color: def.color, star: card.star
+        }, 560);
+      }
+    }
+    applyVoidBuff(unit, amount, turns) {
+      const oldAmount = Math.max(0, unit.voidBuffAmount || 0);
+      const baseMaxHp = Math.max(1, unit.maxHp - oldAmount);
+      unit.voidBuffAmount = amount;
+      unit.voidBuffTurns = turns;
+      unit.maxHp = baseMaxHp + amount;
+      // 首次获得或换成更高档增益时只补足“新增上限差额”；同档刷新只续时长，不能重复治疗。
+      const gained = Math.max(0, amount - oldAmount);
+      unit.hp = Math.min(unit.maxHp, unit.hp + gained);
+      this.game.renderer.addFloat(unit.x, unit.y, gained > 0 ? "+" + gained + "生命" : "生命上限续期", "#e6ca72");
+    }
+    voidBuffValue(unit, ratio) {
+      const baseMaxHp = Math.max(1, unit.maxHp - (unit.voidBuffAmount || 0));
+      return Math.max(1, Math.ceil(baseMaxHp * ratio));
+    }
+    dispelOne(unit) {
+      const options = [];
+      if (unit.skipTurns > 0) options.push({ name: "冰冻/浮空", clear: () => unit.skipTurns = 0 });
+      if (unit.rootTurns > 0) options.push({ name: "定身", clear: () => unit.rootTurns = 0 });
+      if (unit.slowTurns > 0) options.push({ name: "减速", clear: () => unit.slowTurns = 0 });
+      if (unit.vulnerableUntil > this.game.battle.time) options.push({ name: "易伤", clear: () => unit.vulnerableUntil = 0 });
+      if (!options.length) return "";
+      const chosen = options[this.game.rng.int(options.length)];
+      chosen.clear();
+      return chosen.name;
+    }
+    summonStats(actor, def, star) {
+      const inheritedPower = actor.attack > 0 ? actor.attack : Math.max(1, Math.round(actor.maxHp * .13));
+      return {
+        hp: Math.max(1, Math.round(actor.maxHp * def.summonHpRatio[star])),
+        attack: Math.max(1, Math.round(inheritedPower * def.summonAttackRatio[star]))
+      };
+    }
+    summonStone(actor, target, def, star) {
+      const stats = this.summonStats(actor, def, star);
+      const data = {
+        id: "summon" + (this.game.summonSequence++), name: "石酋", short: "石",
+        type: "summon", x: target.cell.x, y: target.cell.y,
+        hp: stats.hp, speed: Math.max(10, actor.speed - 2),
+        attack: stats.attack, range: 1, color: "#a99b73", summon: true
+      };
+      const unit = new Unit(data, actor.team, []);
+      unit.ownerId = actor.id;
+      unit.summonTurns = def.summonTurns;
+      unit.maxActionPoints = 0;
+      unit.actionPoints = 0;
+      unit.gauge = CONFIG.ACTION_THRESHOLD;
+      unit.immediateAction = true;
+      this.game.units.push(unit);
+      this.game.renderer.addFloat(unit.x, unit.y, "石酋参战", def.color);
+      return unit;
+    }
+    pullTargetsToAim(targets, aimCell) {
+      const destinations = this.cellsFromShape(aimCell, { type: "diamond", radius: 2 })
+        .filter(cell => !(cell.x === aimCell.x && cell.y === aimCell.y))
+        .sort((a, b) => manhattan(a, aimCell) - manhattan(b, aimCell) || a.y - b.y || a.x - b.x);
+      targets.filter(unit => unit.alive).forEach(unit => {
+        const destination = destinations.find(cell =>
+          manhattan(cell, aimCell) < manhattan(unit, aimCell) && !this.game.map.isBlocked(cell.x, cell.y, unit)
+        );
+        if (!destination) return;
+        unit.x = destination.x;
+        unit.y = destination.y;
+        unit.renderX = destination.x;
+        unit.renderY = destination.y;
+      });
     }
     cast(actor, card, target) {
       const def = SKILL_DEFS[card.skill];
-      const star = card.star;
+      const star = clamp(card.star, 1, 3) - 1;
       const from = { x: actor.x, y: actor.y };
       const result = { kind: card.skill, target: target, from: from, motion: null, color: def.color };
+      if (def.kind === "groundAllyAoe") {
+        target.allies.forEach(unit => {
+          const wasEmergency = unit.hpRatio() < .3;
+          this.applyVoidBuff(unit, this.voidBuffValue(unit, def.maxHpBuffRatio[star]), def.durationTurns);
+          if (wasEmergency) this.game.applyHeal(actor, unit, Math.ceil(unit.maxHp * def.emergencyHealRatio), def.name);
+        });
+        this.game.log(actor.name + " 的「" + def.name + "」覆盖 " + target.allies.length + " 名友方", "skill");
+        return result;
+      }
+      if (def.kind === "singleAlly") {
+        const unit = target.allies[0];
+        this.game.applyHeal(actor, unit, def.heal[star], def.name);
+        const removed = def.dispel ? this.dispelOne(unit) : "";
+        if (removed) this.game.renderer.addFloat(unit.x, unit.y, "驱散" + removed, def.color);
+        this.game.log(actor.name + " 对 " + unit.name + " 施放「" + def.name + "」" + (removed ? "并驱散" + removed : ""), "skill");
+        return result;
+      }
+      if (def.kind === "summon") {
+        const summon = this.summonStone(actor, target, def, star);
+        this.game.log(actor.name + " 召唤 " + summon.name + "，将立即行动", "skill");
+        return result;
+      }
 
-      if (card.skill === "guard") {
-        target.shield += def.shield[star - 1];
-        this.game.renderer.addFloat(target.x, target.y, "+" + def.shield[star - 1] + "盾", def.color);
-        if (star === 3) {
-          this.alliesOf(actor).filter(u => u !== target && manhattan(u, target) === 1).forEach(u => {
-            u.shield += def.splashShield;
-            this.game.renderer.addFloat(u.x, u.y, "+" + def.splashShield + "盾", def.color);
+      if (def.kind === "groundVolley") {
+        const repeatCounts = new Map();
+        const originalCandidates = (target.volleyCandidates || target.targets).filter(unit => unit.alive);
+        const preparedCenters = (target.preparedVolleyCenters || []).map(center => ({ x: center.x, y: center.y }));
+        while (preparedCenters.length < def.shots && originalCandidates.length) {
+          const unit = originalCandidates[this.game.rng.int(originalCandidates.length)];
+          preparedCenters.push({ x: unit.x, y: unit.y });
+        }
+        result.volleyHits = [];
+        for (let i = 0; i < def.shots; i++) {
+          const center = preparedCenters[i];
+          if (!center) break;
+          const victims = this.enemiesOf(actor).filter(unit => unit.alive && manhattan(unit, center) <= def.waveRadius);
+          if (!victims.length) continue;
+          result.volleyHits.push({ wave: i, x: center.x, y: center.y, targetIds: victims.map(unit => unit.id) });
+          victims.forEach(unit => {
+            const repeats = repeatCounts.get(unit.id) || 0;
+            const amount = Math.max(1, Math.round(def.perHit[star] * Math.pow(1 - def.repeatDecay, repeats)));
+            this.game.applyDamage(actor, unit, amount, def.name);
+            repeatCounts.set(unit.id, repeats + 1);
           });
         }
-        this.game.log(actor.name + " 为 " + target.name + " 提供护盾", "skill");
+      } else {
+        const hits = def.hits || 1;
+        const amount = def.damage ? def.damage[star] : def.perHit ? def.perHit[star] : 0;
+        target.targets.forEach(unit => {
+          for (let hit = 0; hit < hits && unit.alive; hit++) this.game.applyDamage(actor, unit, amount, def.name);
+        });
       }
 
-      if (card.skill === "pull") {
-        this.game.applyDamage(actor, target, def.damage[star - 1], "牵引");
-        if (target.alive) {
-          const path = this.pullPath(target, actor, def.pull[star - 1]);
-          if (path.length > 1) {
-            const old = { x: target.x, y: target.y };
-            const end = path[path.length - 1];
-            target.x = end.x;
-            target.y = end.y;
-            target.renderX = old.x;
-            target.renderY = old.y;
-            result.motion = { unit: target, path: path };
-          }
+      target.targets.filter(unit => unit.alive).forEach(unit => {
+        if (def.freezeChance && this.game.rng.next() < def.freezeChance) {
+          unit.skipTurns = Math.max(unit.skipTurns || 0, def.freezeTurns);
+          this.game.renderer.addFloat(unit.x, unit.y, "冰冻", "#83cffa");
         }
-        this.game.log(actor.name + " 牵引 " + target.name, "skill");
-      }
-
-      if (card.skill === "sunder") {
-        this.game.applyDamage(actor, target, def.damage[star - 1], "破甲");
-        if (target.alive) target.vulnerableUntil = this.game.battle.time + def.duration[star - 1];
-        this.game.log(actor.name + " 破甲 " + target.name, "skill");
-      }
-
-      if (card.skill === "slash") {
-        this.game.applyDamage(actor, target, def.damage[star - 1], "斩击");
-        if (star === 3) {
-          this.enemiesOf(actor).filter(u => u !== target && manhattan(u, target) === 1)
-            .forEach(u => this.game.applyDamage(actor, u, def.splashDamage, "旋斩"));
+        if (def.rootChance && this.game.rng.next() < def.rootChance) {
+          unit.rootTurns = Math.max(unit.rootTurns || 0, def.rootTurns);
+          this.game.renderer.addFloat(unit.x, unit.y, "定身", "#88c69b");
         }
-        this.game.log(actor.name + " 斩击 " + target.name, "skill");
-      }
-
-      if (card.skill === "fireball") {
-        const hitTargets = target.targets.slice();
-        hitTargets.forEach(u => this.game.applyDamage(actor, u, def.damage[star - 1], "火球"));
-        if (star === 3) {
-          this.areaCells(target.cell, 2).forEach(p => {
-            const existing = this.game.map.burnZones.find(z => z.x === p.x && z.y === p.y && z.team === actor.team);
-            if (existing) existing.expiresAt = this.game.battle.time + CONFIG.BURN_DURATION;
-            else this.game.map.burnZones.push({
-              x: p.x, y: p.y, team: actor.team,
-              expiresAt: this.game.battle.time + CONFIG.BURN_DURATION
-            });
-          });
+        if (def.airborneTurns) {
+          unit.skipTurns = Math.max(unit.skipTurns || 0, def.airborneTurns);
+          this.game.renderer.addFloat(unit.x, unit.y, "浮空", "#8ed9ca");
         }
-        this.game.log(actor.name + " 的火球命中 " + hitTargets.length + " 个目标", "skill");
-      }
-
-      if (card.skill === "heal") {
-        this.game.applyHeal(actor, target, def.heal[star - 1], "治疗");
-        if (star === 3) {
-          this.alliesOf(actor).filter(u => u !== target && manhattan(u, target) === 1)
-            .forEach(u => this.game.applyHeal(actor, u, def.splashHeal, "愈合余波"));
-        }
-        this.game.log(actor.name + " 治疗 " + target.name, "skill");
-      }
-
-      if (card.skill === "charge") {
-        const path = this.chargePath(actor, target, def.distance[star - 1]);
-        if (path.length > 1) {
-          const old = { x: actor.x, y: actor.y };
-          const end = path[path.length - 1];
-          actor.x = end.x;
-          actor.y = end.y;
-          actor.renderX = old.x;
-          actor.renderY = old.y;
-          result.motion = { unit: actor, path: path };
-        }
-        if (manhattan(actor, target) === 1) {
-          this.game.applyDamage(actor, target, def.damage[star - 1], "冲锋");
-        }
-        this.game.log(actor.name + " 冲锋 " + target.name, "skill");
-      }
-
-      if (card.skill === "rapid") {
-        const hits = def.hits[star - 1];
-        for (let i = 0; i < hits && target.alive; i++) {
-          this.game.applyDamage(actor, target, def.perHit[star - 1], "连射");
-        }
-        this.game.log(actor.name + " 对 " + target.name + " 连射 " + hits + " 次", "skill");
-      }
+      });
+      if (def.pullToAim) this.pullTargetsToAim(target.targets, target.cell);
+      this.game.log(actor.name + " 的「" + def.name + "」命中 " + target.targets.length + " 个目标", "skill");
       return result;
     }
   }
@@ -941,13 +1219,54 @@
     constructor(game) {
       this.game = game;
     }
-    enemyThreatAt(pos, team) {
+    reachableForThreat(enemy, maxSteps, occupiedPos, movingUnit) {
+      const queue = [{ x: enemy.x, y: enemy.y, d: 0 }];
+      const seen = new Set([keyOf(enemy.x, enemy.y)]);
+      const result = [];
+      while (queue.length) {
+        const node = queue.shift();
+        result.push(node);
+        if (node.d >= maxSteps) continue;
+        this.game.map.neighbors(node.x, node.y).forEach(next => {
+          const key = keyOf(next.x, next.y);
+          if (seen.has(key) || this.game.map.isObstacle(next.x, next.y)) return;
+          if (occupiedPos && next.x === occupiedPos.x && next.y === occupiedPos.y) return;
+          const occupied = this.game.units.some(unit =>
+            unit.alive && unit !== enemy && unit !== movingUnit && unit.x === next.x && unit.y === next.y
+          );
+          if (occupied) return;
+          seen.add(key);
+          queue.push({ x: next.x, y: next.y, d: node.d + 1 });
+        });
+      }
+      return result;
+    }
+    enemyThreatSummary(pos, team, movingUnit) {
       let count = 0;
+      let damage = 0;
       this.game.units.filter(u => u.alive && u.team !== team).forEach(enemy => {
-        const range = enemy.team === "enemy" ? enemy.range : 4;
-        if (manhattan(pos, enemy) <= range) count++;
+        const baseMove = enemy.team === "enemy" ? CONFIG.ENEMY_MOVE : 0;
+        const moveSteps = enemy.rootTurns > 0 ? 0 : enemy.slowTurns > 0 ? Math.max(0, baseMove - 1) : baseMove;
+        const range = enemy.range || 1;
+        // 评估假想落点时释放角色的旧格，并把新格视作已被角色占据。
+        const nodes = this.reachableForThreat(enemy, moveSteps, pos, movingUnit || null);
+        if (nodes.some(node => manhattan(node, pos) <= range)) {
+          count++;
+          damage += enemy.attack || 12;
+        }
       });
-      return count;
+      return { count: count, damage: damage };
+    }
+    enemyThreatAt(pos, team, movingUnit) {
+      return this.enemyThreatSummary(pos, team, movingUnit).count;
+    }
+    adjacentEnemyCount(pos, team) {
+      return this.game.units.filter(u => u.alive && u.team !== team && manhattan(pos, u) <= 1).length;
+    }
+    isHostileZone(pos, team) {
+      return this.game.map.isDanger(pos.x, pos.y) || this.game.map.burnZones.some(zone =>
+        zone.x === pos.x && zone.y === pos.y && zone.team !== team && zone.expiresAt > this.game.battle.time
+      );
     }
     nearestEnemyDistance(pos, team) {
       const enemies = this.game.units.filter(u => u.alive && u.team !== team);
@@ -975,7 +1294,7 @@
         if (cd > 0) tempCd[card.skill] = cd;
       }
       const enemyDist = this.nearestEnemyDistance(node, unit.team);
-      const threat = this.enemyThreatAt(node, unit.team);
+      const threat = this.enemyThreatAt(node, unit.team, unit);
       score += castable * W.CASTABLE_CARD;
       score += damage * W.DAMAGE;
       score += heal * W.HEAL;
@@ -1008,37 +1327,117 @@
       );
       return chosen;
     }
-    chooseCastPosition(unit, card, actionPoints) {
-      const maxSteps = Math.max(0, actionPoints) * CONFIG.MOVE_PER_ACTION_POINT;
-      if (!maxSteps) return null;
+    castPositionRecord(unit, card, node, estimate, remainingQueue) {
       const W = CONFIG.AI_WEIGHTS;
+      const def = SKILL_DEFS[card.skill];
+      const threat = this.enemyThreatSummary(node, unit.team, unit);
+      const simulatedCooling = new Set(SKILL_KEYS.filter(skill => unit.isCooling(skill)));
+      if (def.cooldownTurns > 0) simulatedCooling.add(card.skill);
+      let futureCastable = 0;
+      (remainingQueue || []).forEach(queuedCard => {
+        if (simulatedCooling.has(queuedCard.skill)) return;
+        if (this.game.skills.estimate(unit, queuedCard, node).castable) futureCastable++;
+        if (SKILL_DEFS[queuedCard.skill].cooldownTurns > 0) simulatedCooling.add(queuedCard.skill);
+      });
+      return Object.assign(node, {
+        estimate: estimate,
+        apCost: Math.ceil(node.d / CONFIG.MOVE_PER_ACTION_POINT),
+        aoeFirst: ["selfAoe", "directionalDamage", "groundEnemyAoe", "groundVolley", "groundAllyAoe"].includes(def.kind),
+        coverage: (estimate.plan.targets || []).length + (estimate.plan.allies || []).length,
+        value: estimate.damage * W.DAMAGE + estimate.heal * W.HEAL +
+          estimate.aoe * W.AOE_HIT + estimate.kills * W.KILL,
+        hazard: this.isHostileZone(node, unit.team) ? 1 : 0,
+        adjacent: this.adjacentEnemyCount(node, unit.team),
+        threatCount: threat.count,
+        threatDamage: threat.damage,
+        targetDistance: estimate.targetDistance,
+        futureCastable: futureCastable,
+        terrainSafety: this.game.map.distanceToNearestDanger(node)
+      });
+    }
+    compareCastPositions(a, b, isLastCard) {
+      const safety = a.hazard - b.hazard ||
+        a.adjacent - b.adjacent ||
+        a.threatDamage - b.threatDamage ||
+        a.threatCount - b.threatCount;
+      if (safety) return safety;
+      const targetQuality = a.aoeFirst
+        ? b.coverage - a.coverage || b.estimate.kills - a.estimate.kills
+        : b.estimate.kills - a.estimate.kills || b.coverage - a.coverage;
+      if (targetQuality) return targetQuality;
+      return b.value - a.value ||
+        b.futureCastable - a.futureCastable ||
+        (isLastCard ? b.apCost - a.apCost : a.apCost - b.apCost) ||
+        b.targetDistance - a.targetDistance ||
+        b.terrainSafety - a.terrainSafety ||
+        a.d - b.d || a.y - b.y || a.x - b.x;
+    }
+    chooseCastPosition(unit, card, actionPoints, remainingQueue) {
+      const maxSteps = Math.max(0, actionPoints) * CONFIG.MOVE_PER_ACTION_POINT;
+      const isLastCard = !(remainingQueue && remainingQueue.length);
+      if (!this.game.skills.hasPotentialTarget(unit, card)) return null;
       const candidates = this.game.map.reachable(unit, maxSteps)
-        .filter(node => node.d > 0)
         .map(node => {
           const estimate = this.game.skills.estimate(unit, card, node);
           if (!estimate.castable) return null;
-          const apCost = Math.ceil(node.d / CONFIG.MOVE_PER_ACTION_POINT);
-          const value = estimate.damage * W.DAMAGE + estimate.heal * W.HEAL +
-            estimate.aoe * W.AOE_HIT + estimate.kills * W.KILL;
-          return Object.assign(node, {
-            apCost: apCost,
-            value: value,
-            danger: this.game.map.isDanger(node.x, node.y) ? 1 : 0,
-            safety: this.game.map.distanceToNearestDanger(node)
-          });
+          return this.castPositionRecord(unit, card, node, estimate, remainingQueue);
         })
-        .filter(Boolean)
-        .sort((a, b) =>
-          a.apCost - b.apCost ||
-          b.value - a.value ||
-          a.danger - b.danger ||
-          b.safety - a.safety ||
-          a.d - b.d || a.y - b.y || a.x - b.x
-        );
-      return candidates[0] || null;
+        .filter(Boolean).sort((a, b) => this.compareCastPositions(a, b, isLastCard));
+      if (candidates.length) return candidates[0];
+
+      // 当前行动力内仍不能施法时，继续在整张可达地图寻找未来施法位，
+      // 沿其路径走到本回合最远前缀；移动后仍超距才由卡牌流程弃置。
+      if (!maxSteps) return null;
+      const future = this.game.map.reachable(unit, CONFIG.MAP_COLS * CONFIG.MAP_ROWS)
+        .map(node => {
+          const estimate = this.game.skills.estimate(unit, card, node);
+          if (!estimate.castable) return null;
+          return this.castPositionRecord(unit, card, node, estimate, remainingQueue);
+        }).filter(Boolean);
+      if (!future.length) return null;
+      const approachesByEnd = new Map();
+      future.forEach(destination => {
+        const furthest = Math.min(maxSteps, destination.path.length - 1);
+        for (let steps = 1; steps <= furthest; steps++) {
+          const prefix = destination.path.slice(0, steps + 1);
+          const end = prefix[prefix.length - 1];
+          const threat = this.enemyThreatSummary(end, unit.team, unit);
+          const approach = {
+            x: end.x, y: end.y, d: steps, path: prefix,
+            apCost: Math.ceil(steps / CONFIG.MOVE_PER_ACTION_POINT),
+            hazard: this.isHostileZone(end, unit.team) ? 1 : 0,
+            adjacent: this.adjacentEnemyCount(end, unit.team),
+            threatDamage: threat.damage,
+            threatCount: threat.count,
+            terrainSafety: this.game.map.distanceToNearestDanger(end),
+            remaining: destination.d - steps,
+            destination: destination
+          };
+          const key = keyOf(end.x, end.y);
+          const previous = approachesByEnd.get(key);
+          if (!previous || approach.remaining < previous.remaining ||
+              (approach.remaining === previous.remaining && this.compareCastPositions(destination, previous.destination, isLastCard) < 0)) {
+            approachesByEnd.set(key, approach);
+          }
+        }
+      });
+      const approaches = Array.from(approachesByEnd.values()).sort((a, b) =>
+        a.hazard - b.hazard || a.adjacent - b.adjacent ||
+        a.threatDamage - b.threatDamage || a.threatCount - b.threatCount ||
+        this.compareCastPositions(a.destination, b.destination, isLastCard) ||
+        a.remaining - b.remaining || b.terrainSafety - a.terrainSafety ||
+        b.d - a.d || a.y - b.y || a.x - b.x
+      );
+      if (!approaches.length) return null;
+      const chosen = approaches[0];
+      return Object.assign({}, chosen, {
+        approaching: true,
+        futureDestination: { x: chosen.destination.x, y: chosen.destination.y }
+      });
     }
-    chooseEnemyMove(unit, target) {
-      const nodes = this.game.map.reachable(unit, CONFIG.ENEMY_MOVE);
+    chooseEnemyMove(unit, target, maxSteps) {
+      const steps = maxSteps === undefined ? CONFIG.ENEMY_MOVE : Math.max(0, maxSteps);
+      const nodes = this.game.map.reachable(unit, steps);
       if (unit.type === "ranged") {
         const ideal = 4;
         return nodes.sort((a, b) => {
@@ -1100,7 +1499,8 @@
       alive.forEach(u => u.gauge = Math.min(CONFIG.ACTION_THRESHOLD, u.gauge + u.speed * delta));
       this.game.map.purgeBurn(this.time);
       const ready = alive.filter(u => u.gauge >= CONFIG.ACTION_THRESHOLD - 0.0001)
-        .sort((a, b) => b.speed - a.speed || a.id.localeCompare(b.id));
+        .sort((a, b) => (b.immediateAction ? 1 : 0) - (a.immediateAction ? 1 : 0) ||
+          b.speed - a.speed || a.id.localeCompare(b.id));
       return ready[0] || null;
     }
     startNextAction() {
@@ -1108,6 +1508,7 @@
       const actor = this.advanceTimeline();
       if (!actor) return;
       this.currentActor = actor;
+      actor.immediateAction = false;
       this.actionIndex++;
       actor.actionCount++;
       if (actor.team === "ally") actor.actionPoints = actor.maxActionPoints;
@@ -1117,7 +1518,9 @@
         actor.team === "ally" ? "ally" : "enemy"
       );
       this.addStep(CONFIG.ANIMATION.INTRO);
-      if (actor.team === "ally") this.buildAllyAction(actor);
+      if (actor.skipTurns > 0) this.buildDisabledAction(actor);
+      else if (actor.type === "summon") this.buildSummonAction(actor);
+      else if (actor.team === "ally") this.buildAllyAction(actor);
       else this.buildEnemyAction(actor);
     }
     createMoveStep(unit, path, perCell) {
@@ -1297,20 +1700,19 @@
         this.game.renderer.actionCue = null;
       }, { visualBarrier: true, label: "actionStart" });
     }
-    createRepositionStep(actor, card) {
+    createRepositionStep(actor, card, remainingQueue) {
       this.addStep(1, step => {
         step.path = null;
         step.visualBarrier = false;
         if (!actor.alive || actor.isCooling(card.skill)) return;
-        if (this.game.skills.findTarget(actor, card)) return;
-        const choice = this.game.ai.chooseCastPosition(actor, card, actor.actionPoints);
+        const choice = this.game.ai.chooseCastPosition(actor, card, actor.actionPoints, remainingQueue || []);
         if (!choice) {
-          this.game.log(
-            SKILL_DEFS[card.skill].name + (actor.actionPoints > 0 ? " 尝试寻路后仍无可施法位置" : " 行动力已耗尽，无法接近目标"),
-            "warn"
+          if (this.game.skills.hasPotentialTarget(actor, card)) this.game.log(
+            SKILL_DEFS[card.skill].name + (actor.actionPoints > 0 ? " 全图没有可到达的施法位置" : " 行动力已耗尽，无法调整站位"), "warn"
           );
           return;
         }
+        if (!choice.path || choice.path.length <= 1) return;
         step.path = choice.path.map(p => ({ x: p.x, y: p.y }));
         step.duration = Math.max(100, (step.path.length - 1) * CONFIG.ANIMATION.MOVE_PER_CELL);
         step.visualBarrier = true;
@@ -1322,7 +1724,7 @@
         actor.renderY = step.path[0].y;
         this.game.map.focusOn(end.x, end.y, false);
         this.game.log(
-          actor.name + " 为施放「" + SKILL_DEFS[card.skill].name + "」移动 " + (step.path.length - 1) +
+          actor.name + (choice.approaching ? " 为接近未来施法位" : " 为安全施放「" + SKILL_DEFS[card.skill].name + "」") + "移动 " + (step.path.length - 1) +
           " 格，消耗 " + choice.apCost + " 行动力（剩余 " + actor.actionPoints + "）",
           "ai"
         );
@@ -1391,8 +1793,12 @@
         const target = this.game.skills.findTarget(actor, card);
         if (!target) {
           this.game.hand.removeCard(actor, card);
-          this.game.log(SKILL_DEFS[card.skill].name + " 已尝试移动，仍没有合法目标，弃置", "warn");
-          flow.reason = "移动后仍无目标";
+          const stillPotential = this.game.skills.hasPotentialTarget(actor, card);
+          this.game.log(
+            SKILL_DEFS[card.skill].name + (stillPotential ? " 已尝试移动，仍没有合法目标，弃置" : " 当前不存在可作用的目标，弃置"),
+            "warn"
+          );
+          flow.reason = stillPotential ? "移动后仍无目标" : "没有可作用目标";
           this.game.renderer.actionCue = {
             type: "skip", actor: actor, card: card, progress: 0, reason: flow.reason
           };
@@ -1483,8 +1889,8 @@
         this.createRemoteHandPreparationStep(actor, prep.finalState, prep.queue.length);
       }
       this.createActionStartStep(actor, prep.finalState, prep.queue.length);
-      prep.queue.forEach(card => {
-        this.createRepositionStep(actor, card);
+      prep.queue.forEach((card, index) => {
+        this.createRepositionStep(actor, card, prep.queue.slice(index + 1));
         this.createCardStep(actor, card);
       });
       this.addEndTileStep(actor);
@@ -1499,8 +1905,9 @@
         this.addStep(80);
         return;
       }
-      const move = this.game.ai.chooseEnemyMove(actor, target);
-      this.game.log(actor.name + " 向 " + target.name + " 移动", "enemy");
+      const moveSteps = actor.rootTurns > 0 ? 0 : actor.slowTurns > 0 ? Math.max(0, CONFIG.ENEMY_MOVE - 1) : CONFIG.ENEMY_MOVE;
+      const move = this.game.ai.chooseEnemyMove(actor, target, moveSteps);
+      this.game.log(actor.name + (actor.rootTurns > 0 ? " 被定身，无法移动" : actor.slowTurns > 0 ? " 受减速影响向 " + target.name + " 移动" : " 向 " + target.name + " 移动"), "enemy");
       this.createMoveStep(actor, move.path, CONFIG.ANIMATION.MOVE_PER_CELL);
       this.addStep(CONFIG.ANIMATION.ATTACK, step => {
         if (!actor.alive) return;
@@ -1524,6 +1931,37 @@
       });
       this.addEndTileStep(actor);
     }
+    buildSummonAction(actor) {
+      const target = this.nearestTarget(actor);
+      if (!target) {
+        this.addStep(80);
+        return;
+      }
+      const moveSteps = actor.rootTurns > 0 ? 0 : actor.slowTurns > 0 ? 1 : CONFIG.ENEMY_MOVE;
+      const move = this.game.ai.chooseEnemyMove(actor, target, moveSteps);
+      this.game.log(actor.name + " 执行召唤物行动（剩余 " + actor.summonTurns + " 回合）", "ally");
+      this.createMoveStep(actor, move.path, CONFIG.ANIMATION.MOVE_PER_CELL);
+      this.addStep(CONFIG.ANIMATION.ATTACK, () => {
+        if (!actor.alive) return;
+        const newTarget = this.nearestTarget(actor);
+        if (!newTarget || manhattan(actor, newTarget) > actor.range) {
+          this.game.log(actor.name + " 未进入攻击范围", "muted");
+          return;
+        }
+        this.game.applyDamage(actor, newTarget, actor.attack, "石酋重击");
+        this.game.renderer.addEffect("sunder", {
+          x: newTarget.x, y: newTarget.y, from: { x: actor.x, y: actor.y }, color: actor.color, star: 1
+        }, 520);
+      });
+      this.addEndTileStep(actor);
+    }
+    buildDisabledAction(actor) {
+      this.addStep(CONFIG.ANIMATION.ACTION_START, () => {
+        this.game.renderer.addFloat(actor.x, actor.y, "无法行动", "#8fd2e8");
+        this.game.log(actor.name + " 处于冰冻/浮空状态，本回合无法行动", actor.team === "ally" ? "warn" : "enemy");
+      }, null, null, { visualBarrier: true, label: "disabled" });
+      this.addEndTileStep(actor);
+    }
     addEndTileStep(actor) {
       this.addStep(CONFIG.ANIMATION.END_TILE, () => {
         if (!actor.alive) return;
@@ -1544,16 +1982,18 @@
       actor.gauge = 0;
       if (actor.team === "ally") {
         actor.finishOwnTurnCooldowns();
-        this.game.hand.normalizeAfterAction(actor);
+        if (actor.type !== "summon") this.game.hand.normalizeAfterAction(actor);
       }
+      actor.finishOwnTurnStatuses(this.game);
       this.currentActor = null;
       this.game.assertState();
       this.checkVictory();
       if (this.stepping) this.stepping = false;
     }
     checkVictory() {
-      const alliesAlive = this.game.units.some(u => u.alive && u.team === "ally");
-      const enemiesAlive = this.game.units.some(u => u.alive && u.team === "enemy");
+      // 双方召唤物都不能代替基础角色维持战斗；本体全部阵亡时立即结算。
+      const alliesAlive = this.game.units.some(u => u.alive && u.team === "ally" && u.type !== "summon");
+      const enemiesAlive = this.game.units.some(u => u.alive && u.team === "enemy" && u.type !== "summon");
       if (alliesAlive && enemiesAlive) return false;
       this.gameOver = true;
       this.running = false;
@@ -1797,6 +2237,23 @@
       ctx.textAlign = align || "left";
       ctx.textBaseline = "middle";
       ctx.fillText(text, x, y);
+      ctx.restore();
+    }
+    fittedText(text, x, y, size, maxWidth, color, align, weight, minSize) {
+      const ctx = this.ctx;
+      let fittedSize = size;
+      const minimum = minSize || 6;
+      ctx.save();
+      while (fittedSize > minimum) {
+        ctx.font = (weight || 500) + " " + fittedSize + "px \"PingFang SC\",\"Microsoft YaHei\",sans-serif";
+        if (ctx.measureText(text).width <= maxWidth) break;
+        fittedSize -= .5;
+      }
+      ctx.font = (weight || 500) + " " + fittedSize + "px \"PingFang SC\",\"Microsoft YaHei\",sans-serif";
+      ctx.fillStyle = color || CONFIG.COLORS.ink;
+      ctx.textAlign = align || "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, x, y, Math.max(1, maxWidth));
       ctx.restore();
     }
     drawBackground() {
@@ -2097,6 +2554,26 @@
       if (unit.team === "ally") {
         const bob = acting ? Math.sin(this.clock / 115) * 1.2 : Math.sin(this.clock / 420 + unit.speed) * .45;
         ctx.translate(0, bob);
+        if (unit.type === "summon") {
+          const stone = ctx.createLinearGradient(-13, -15, 14, 14);
+          stone.addColorStop(0, "#d7cda9");
+          stone.addColorStop(.48, unit.color);
+          stone.addColorStop(1, "#625f54");
+          ctx.fillStyle = stone;
+          ctx.strokeStyle = "#efe4bd";
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(-13, 10); ctx.lineTo(-15, -3); ctx.lineTo(-8, -15);
+          ctx.lineTo(4, -18); ctx.lineTo(13, -8); ctx.lineTo(15, 8);
+          ctx.lineTo(8, 14); ctx.lineTo(-7, 14); ctx.closePath();
+          ctx.fill(); ctx.stroke();
+          ctx.fillStyle = "#70c7a3";
+          ctx.beginPath(); ctx.arc(-4.5, -3, 2.1, 0, Math.PI * 2); ctx.arc(5, -3, 2.1, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = "rgba(72,91,78,.72)";
+          ctx.beginPath(); ctx.moveTo(-8, 5); ctx.lineTo(-2, 2); ctx.lineTo(5, 6); ctx.lineTo(10, 3); ctx.stroke();
+          ctx.fillStyle = "#88a77d";
+          ctx.beginPath(); ctx.ellipse(-13, 12, 6, 3, -.2, 0, Math.PI * 2); ctx.ellipse(13, 12, 6, 3, .2, 0, Math.PI * 2); ctx.fill();
+        } else {
         if (unit.id === "a2") {
           ctx.fillStyle = unit.color;
           ctx.beginPath();
@@ -2179,6 +2656,7 @@
           ctx.beginPath(); ctx.moveTo(12, 12); ctx.lineTo(16, -8); ctx.stroke();
           ctx.fillStyle = "#f5d776";
           ctx.beginPath(); ctx.moveTo(15, -11); ctx.lineTo(18, -6); ctx.lineTo(13, -7); ctx.closePath(); ctx.fill();
+        }
         }
       } else {
         if (unit.type === "elite") {
@@ -2528,13 +3006,15 @@
         }
         if (e.type === "rapid") {
           const from = this.game.map.worldToScreen(d.from.x, d.from.y);
-          const to = this.game.map.worldToScreen(d.to.x, d.to.y);
           const s = CONFIG.CELL / 38;
           ctx.save();
           ctx.shadowColor = d.color;
           ctx.shadowBlur = 10 * s;
           for (let i = 0; i < d.hits; i++) {
-            const local = clamp((t - i * .13) / .42, 0, 1);
+            const destination = d.tos && d.tos.length ? d.tos[i % d.tos.length] : d.to;
+            const to = this.game.map.worldToScreen(destination.x, destination.y);
+            const stagger = Math.min(.13, .6 / Math.max(1, d.hits - 1));
+            const local = clamp((t - i * stagger) / .4, 0, 1);
             if (local <= 0 || local >= 1) continue;
             const q = ease(local);
             const side = (i - (d.hits - 1) / 2) * 4 * s;
@@ -2659,55 +3139,31 @@
       ctx.arc(target.x, target.y, (19 + (1 - t) * 11) * s, 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
-      if (["pull", "sunder", "fireball", "rapid", "charge"].includes(cue.card.skill)) {
-        ctx.globalAlpha *= .72;
+      const plan = cue.target;
+      if (plan && plan.affectedCells) {
+        ctx.shadowBlur = 7 * s;
+        plan.affectedCells.forEach(cell => {
+          const p = this.game.map.worldToScreen(cell.x, cell.y);
+          ctx.globalAlpha = alpha * .30;
+          ctx.fillStyle = def.color;
+          ctx.fillRect(p.x - CONFIG.CELL / 2 + 2, p.y - CONFIG.CELL / 2 + 2, CONFIG.CELL - 4, CONFIG.CELL - 4);
+          ctx.globalAlpha = alpha * .70;
+          ctx.strokeRect(p.x - CONFIG.CELL / 2 + 3, p.y - CONFIG.CELL / 2 + 3, CONFIG.CELL - 6, CONFIG.CELL - 6);
+        });
+      }
+      const primary = plan && (plan.primary || plan.targets && plan.targets[0] || plan.allies && plan.allies[0]);
+      if (primary && def.kind !== "selfAoe") {
+        const primaryPoint = this.game.map.worldToScreen(primary.renderX, primary.renderY);
+        ctx.globalAlpha = alpha * .72;
         ctx.beginPath();
         ctx.moveTo(actor.x, actor.y);
-        ctx.lineTo(target.x, target.y);
+        ctx.lineTo(primaryPoint.x, primaryPoint.y);
         ctx.stroke();
       }
-      if (cue.card.skill === "guard") {
-        const r = 22 * s;
-        ctx.beginPath();
-        for (let i = 0; i < 6; i++) {
-          const a = -Math.PI / 2 + i * Math.PI / 3;
-          const x = target.x + Math.cos(a) * r;
-          const y = target.y + Math.sin(a) * r;
-          if (!i) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.closePath();
-        ctx.stroke();
-      }
-      if (cue.card.skill === "slash") {
-        ctx.lineWidth = 5 * s;
-        ctx.beginPath();
-        ctx.arc(target.x, target.y, 21 * s, -1.1, 1.7);
-        ctx.stroke();
-      }
-      if (cue.card.skill === "heal") {
+      if (cue.card.skill === "healing_spell") {
+        ctx.globalAlpha = alpha;
         ctx.fillRect(target.x - 3 * s, target.y - 18 * s, 6 * s, 36 * s);
         ctx.fillRect(target.x - 18 * s, target.y - 3 * s, 36 * s, 6 * s);
-      }
-      if (cue.card.skill === "sunder") {
-        ctx.beginPath();
-        ctx.moveTo(target.x - 8 * s, target.y - 20 * s);
-        ctx.lineTo(target.x + 3 * s, target.y - 4 * s);
-        ctx.lineTo(target.x - 4 * s, target.y + 3 * s);
-        ctx.lineTo(target.x + 9 * s, target.y + 20 * s);
-        ctx.stroke();
-      }
-      if (cue.card.skill === "fireball") {
-        ctx.beginPath();
-        ctx.arc(target.x, target.y, (8 + t * 13) * s, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      if (cue.card.skill === "rapid") {
-        for (let i = -1; i <= 1; i++) {
-          ctx.beginPath();
-          ctx.moveTo(actor.x + i * 4 * s, actor.y);
-          ctx.lineTo(target.x + i * 7 * s, target.y);
-          ctx.stroke();
-        }
       }
       ctx.restore();
     }
@@ -3464,6 +3920,15 @@
         const def = SKILL_DEFS[skill];
         const order = equipped.indexOf(skill);
         const active = order >= 0;
+        const compactSkill = !desktop && (sw < 105 || sh < 44);
+        const iconX = sx + (compactSkill ? 14 : desktop ? 27 : 22);
+        const iconRadius = compactSkill ? 10 : desktop ? 16 : 14;
+        const tx = sx + (compactSkill ? 28 : desktop ? 52 : 39);
+        const badgeRadius = compactSkill ? 7 : 12;
+        const badgeX = sx + sw - (compactSkill ? 8 : 17);
+        const badgeY = sy + (compactSkill ? 8 : 17);
+        const textRight = active ? badgeX - badgeRadius - 3 : sx + sw - 6;
+        const textWidth = Math.max(18, textRight - tx);
         this.game.hitRegions.push({ type: "button", id: "editorSkill:" + skill, x: sx, y: sy, w: sw, h: sh });
         ctx.fillStyle = active ? def.color + "32" : "rgba(24,30,31,.94)";
         roundRect(ctx, sx, sy, sw, sh, 11);
@@ -3473,19 +3938,21 @@
         ctx.stroke();
         ctx.fillStyle = def.color;
         ctx.beginPath();
-        ctx.arc(sx + (desktop ? 27 : 22), sy + sh / 2, desktop ? 16 : 14, 0, Math.PI * 2);
+        ctx.arc(iconX, sy + sh / 2, iconRadius, 0, Math.PI * 2);
         ctx.fill();
-        this.text(def.short, sx + (desktop ? 27 : 22), sy + sh / 2, desktop ? 12 : 10, "#fff", "center", 850);
-        const tx = sx + (desktop ? 52 : 43);
-        this.text(def.name, tx, sy + sh / 2 - (desktop ? 11 : 9), desktop ? 14 : 11, active ? "#fff1da" : "#d3d8d1", "left", 800);
+        this.text(def.short, iconX, sy + sh / 2, compactSkill ? 8 : desktop ? 12 : 10, "#fff", "center", 850);
+        const nameY = sy + sh / 2 - (compactSkill ? 6 : desktop ? 17 : 9);
+        this.fittedText(def.name, tx, nameY, compactSkill ? 8.5 : desktop ? 13 : 10, textWidth, active ? "#fff1da" : "#d3d8d1", "left", 800, 6.5);
         const cdText = def.cooldownTurns === 0 ? "无冷却 · 每回合可用" : "冷却 " + def.cooldownTurns + " 个自身回合";
-        this.text(cdText, tx, sy + sh / 2 + (desktop ? 11 : 9), desktop ? 10 : 8, def.cooldownTurns === 2 ? "#e6ab71" : def.cooldownTurns === 1 ? "#9fb9b0" : "#71caa7", "left", 650);
+        const cdLabel = desktop ? cdText : (def.cooldownTurns ? "CD " + def.cooldownTurns + "回合" : "无冷却");
+        this.fittedText(cdLabel, tx, sy + sh / 2 + (compactSkill ? 7 : desktop ? 1 : 9), compactSkill ? 6.5 : desktop ? 9 : 7.5, textWidth, def.cooldownTurns === 2 ? "#e6ab71" : def.cooldownTurns === 1 ? "#9fb9b0" : "#71caa7", "left", 650, 5.5);
+        if (desktop) this.fittedText(def.rangeText, tx, sy + sh / 2 + 19, 8, sw - (tx - sx) - 7, "#879f99", "left", 600, 6);
         if (active) {
           ctx.fillStyle = def.color;
           ctx.beginPath();
-          ctx.arc(sx + sw - 17, sy + 17, 12, 0, Math.PI * 2);
+          ctx.arc(badgeX, badgeY, badgeRadius, 0, Math.PI * 2);
           ctx.fill();
-          this.text(String(order + 1), sx + sw - 17, sy + 17, 9, "#fff", "center", 850);
+          this.text(String(order + 1), badgeX, badgeY, compactSkill ? 6 : 9, "#fff", "center", 850);
         }
       };
 
@@ -3502,15 +3969,16 @@
         CONFIG.ALLIES.forEach((data, i) => drawRosterCard(data, leftX, rosterStart + i * (rosterH + 7), leftW, rosterH));
         const statsY = rosterStart + 4 * (rosterH + 7) + 12;
         this.panel(leftX, statsY, leftW, 68, 10, "rgba(24,30,29,.76)");
-        this.text(selectedData.name + " · 技能 " + equipped.length + "/8", leftX + 13, statsY + 20, 12, "#f1e5ce", "left", 750);
+        this.text(selectedData.name + " · 技能 " + equipped.length + "/" + CONFIG.MAX_EQUIPPED_SKILLS, leftX + 13, statsY + 20, 12, "#f1e5ce", "left", 750);
         this.text("手牌上限 " + limit + " · 行动力 " + CONFIG.ACTION_POINTS, leftX + 13, statsY + 43, 10, "#7fc5aa", "left", 700);
         const protagonistSelected = selectedData.id === this.game.editorDraft.protagonistId;
         this.button(leftX + leftW - 91, statsY + 12, 82, 44, protagonistSelected ? "当前主角" : "设为主角", "editorProtagonist:" + selectedData.id, protagonistSelected, "#b8903f");
         this.text("技能背包 · 点击装配/卸下（数字为释放顺序）", rightX, contentTop, 13, "#d9c69b", "left", 800);
-        const cols = 2, gap = 10;
-        const skillW = (rightW - gap) / cols;
+        const cols = 3, gap = 8;
+        const rows = Math.ceil(SKILL_KEYS.length / cols);
+        const skillW = (rightW - gap * (cols - 1)) / cols;
         const skillStart = contentTop + 24;
-        const skillH = Math.min(83, (footerY - skillStart - 14 - gap * 3) / 4);
+        const skillH = Math.min(83, (footerY - skillStart - 14 - gap * (rows - 1)) / rows);
         SKILL_KEYS.forEach((skill, i) => {
           const col = i % cols;
           const row = Math.floor(i / cols);
@@ -3534,15 +4002,17 @@
         this.text(selectedData.name + " · " + selectedRole, x + 27, protagonistY + 21, 10, protagonistSelected ? "#f1cf70" : selectedActive ? "#bcd5cb" : "#9da9a4", "left", 750);
         this.button(x + w - 104, protagonistY + 4, 86, 34, protagonistSelected ? "当前主角" : "设为主角", "editorProtagonist:" + selectedData.id, protagonistSelected, "#b8903f");
         const skillTitleY = protagonistY + 59;
-        this.text(selectedData.name + " · 技能 " + equipped.length + "/8 · 手牌上限 " + limit, x + 16, skillTitleY, 11, "#e9d9b6", "left", 800);
+        this.text(selectedData.name + " · 技能 " + equipped.length + "/" + CONFIG.MAX_EQUIPPED_SKILLS + " · 手牌上限 " + limit, x + 16, skillTitleY, 11, "#e9d9b6", "left", 800);
         this.text("点击技能装卸", x + w - 16, skillTitleY, 9, "#81bea7", "right", 700);
         const skillStart = skillTitleY + 17;
-        const skillW = (w - 30 - gap) / 2;
+        const cols = 3;
+        const rows = Math.ceil(SKILL_KEYS.length / cols);
+        const skillW = (w - 30 - gap * (cols - 1)) / cols;
         const available = footerY - skillStart - 31;
-        const skillH = clamp((available - gap * 3) / 4, 43, 61);
+        const skillH = clamp((available - gap * (rows - 1)) / rows, 29, 66);
         SKILL_KEYS.forEach((skill, i) => {
-          const col = i % 2;
-          const row = Math.floor(i / 2);
+          const col = i % cols;
+          const row = Math.floor(i / cols);
           drawSkillCard(skill, x + 15 + col * (skillW + gap), skillStart + row * (skillH + gap), skillW, skillH);
         });
       }
@@ -3760,6 +4230,7 @@
         this.lineup[fallback.id] = true;
       }
       CARD_SEQUENCE = 1;
+      this.summonSequence = 1;
       this.rng = new SeededRandom(this.seed);
       this.logs = [];
       this.units = [];
@@ -3785,8 +4256,24 @@
       }
       this.lastAllyActor = this.getSelectedAlly();
       this.swapPick = null;
+      this.applyPreBattleEffects();
       this.log("四屏原野已生成，种子 " + this.seed, "ai");
       this.log("可拖动战场或点击右侧小地图查看", "muted");
+    }
+    applyPreBattleEffects() {
+      const casters = this.units.filter(unit =>
+        unit.alive && unit.team === "ally" && unit.type !== "summon" && unit.skillBar.includes("void_prayer")
+      );
+      if (!casters.length) return;
+      const def = SKILL_DEFS.void_prayer;
+      casters.forEach(caster => {
+        const card = { skill: "void_prayer", star: 1 };
+        const plan = this.skills.findTarget(caster, card);
+        if (!plan) return;
+        this.skills.cast(caster, card, plan);
+        caster.setCooldown("void_prayer", def.cooldownTurns);
+        this.log(caster.name + " 在战斗开始前释放「虚空祝祷」", "skill");
+      });
     }
     getSelectedAlly() {
       let unit = this.units.find(u => u.id === this.selectedAllyId && u.team === "ally");
@@ -3879,8 +4366,12 @@
       const index = current.indexOf(skill);
       if (index >= 0) {
         current.splice(index, 1);
-        this.editorMessage = "已卸下「" + SKILL_DEFS[skill].name + "」。角色可以不带满 8 个技能。";
+        this.editorMessage = "已卸下「" + SKILL_DEFS[skill].name + "」。角色可以不带满 " + CONFIG.MAX_EQUIPPED_SKILLS + " 个技能。";
       } else {
+        if (current.length >= CONFIG.MAX_EQUIPPED_SKILLS) {
+          this.editorMessage = "最多装配 " + CONFIG.MAX_EQUIPPED_SKILLS + " 个战技；请先卸下一个技能。";
+          return;
+        }
         current.push(skill);
         this.editorMessage = "已装配「" + SKILL_DEFS[skill].name + "」，位于释放顺序第 " + current.length + " 位。";
       }
@@ -3903,7 +4394,7 @@
         (this.editorDraft.skills[data.id] || []).forEach(skill => {
           if (SKILL_DEFS[skill] && !unique.includes(skill)) unique.push(skill);
         });
-        this.skillOrders[data.id] = unique.slice(0, SKILL_KEYS.length);
+        this.skillOrders[data.id] = unique.slice(0, CONFIG.MAX_EQUIPPED_SKILLS);
       });
       this.editorOpen = false;
       this.editorDraft = null;
